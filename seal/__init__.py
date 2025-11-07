@@ -6,9 +6,16 @@ model adaptation and fine-tuning, configuration management, and utility function
 
 from .adapter import simulate_edit_locally, generate_edit
 from .openai_edit import generate_edit_via_openai
+from .trainer import SEALTrainer
+from .runner import run_seal_loop
 
 __all__ = [
+    # Core functionality
     'simulate_edit_locally',
     'generate_edit',
     'generate_edit_via_openai',
+    
+    # New components
+    'SEALTrainer',
+    'run_seal_loop',
 ]
