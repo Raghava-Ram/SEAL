@@ -1,0 +1,100 @@
+# SEAL Configuration
+# This is the default configuration file for SEAL (Self-Edit Adaptive Learning)
+
+# Model configuration
+model:
+  # Base model to use for inference and fine-tuning
+  name: "distilbert-base-uncased"
+  # Device to run the model on (cpu, cuda, mps)
+  device: "cpu"
+  # Model precision (float32, float16, bfloat16)
+  torch_dtype: "float32"
+
+# Training configuration
+training:
+  # Batch size for training
+  batch_size: 1
+  # Maximum number of training steps
+  max_steps: 10
+  # Learning rate
+  learning_rate: 5.0e-5
+  # Weight decay
+  weight_decay: 0.01
+  # Number of warmup steps for learning rate scheduler
+  warmup_steps: 100
+  # Gradient accumulation steps
+  gradient_accumulation_steps: 1
+  # Maximum gradient norm for gradient clipping
+  max_grad_norm: 1.0
+
+# Evaluation configuration
+evaluation:
+  # Batch size for evaluation
+  batch_size: 8
+  # Number of beams for beam search (if applicable)
+  num_beams: 1
+  # Maximum length for generation
+  max_length: 100
+  # Number of sequences to generate
+  num_return_sequences: 1
+
+# Editing configuration
+editing:
+  # Edit mode: "local" for local simulation, "openai" for OpenAI API
+  mode: "local"
+  # Temperature for generation
+  temperature: 0.7
+  # Top-p sampling
+  top_p: 0.9
+  # Top-k sampling
+  top_k: 50
+
+# Logging and saving
+logging:
+  # Logging directory
+  log_dir: "./logs"
+  # Logging level (debug, info, warning, error, critical)
+  level: "info"
+  # Save model checkpoints
+  save_steps: 500
+  # Save total limit
+  save_total_limit: 2
+
+# Data configuration
+data:
+  # Maximum sequence length
+  max_seq_length: 512
+  # Whether to pad to max length
+  pad_to_max_length: true
+  # Number of workers for data loading
+  num_workers: 0
+
+# Random seed for reproducibility
+seed: 42
+
+# Whether to use mixed precision training (fp16)
+fp16: false
+
+# Whether to use gradient checkpointing to save memory
+gradient_checkpointing: false
+
+# Path to save the final model
+output_dir: "./output"
+
+# Path to cache directory for Hugging Face datasets and models
+cache_dir: "./cache"
+
+# Whether to use a pretrained model
+use_pretrained: true
+
+# Whether to use LoRA for parameter-efficient fine-tuning
+use_lora: false
+
+# LoRA configuration (if use_lora is true)
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1
+  bias: "none"
+  task_type: "CAUSAL_LM"
+  target_modules: ["q_proj", "v_proj"]
