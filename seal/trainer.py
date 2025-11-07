@@ -5,6 +5,8 @@ from datasets import load_dataset
 import psutil
 import json
 import os
+import random
+from transformers import AutoModelForSequenceClassification
 
 class SEALTrainer:
     """
@@ -16,45 +18,47 @@ class SEALTrainer:
         Initialize the SEAL trainer.
         
         Args:
-            model: Pre-trained model to train
+            model: The model to train
             tokenizer: Tokenizer for the model
             config: Configuration dictionary
         """
         self.model = model
         self.tokenizer = tokenizer
-        self.device = torch.device(config.get("device", "cpu"))
-        self.model.to(self.device)
         self.config = config
+        self.device = torch.device("cpu")  # Force CPU for consistency
+        self.model.to(self.device)
         self.optimizer = AdamW(
-            model.parameters(),
+            self.model.parameters(),
             lr=config.get("learning_rate", 5e-5),
             weight_decay=config.get("weight_decay", 0.01)
         )
 
-    def train_step(self, text, label="positive"):
+    def train_step(self, text, label=1):
         """
-        Perform a single training step with the given text.
+        Perform a single training step with the given text and label.
         
         Args:
             text: Input text for training
-            label: Optional label (not used in base implementation)
+            label: Numeric label (0 or 1) for the input text (default: 1 for positive)
             
         Returns:
-            float: Training loss
+            Loss value for the training step
         """
         self.model.train()
         
-        # Tokenize input
+        # Tokenize input text
         inputs = self.tokenizer(
             text,
             return_tensors="pt",
             truncation=True,
             padding=True,
-            max_length=self.config.get("max_seq_length", 512)
+            max_length=512
         ).to(self.device)
         
+        # Convert label to tensor
+        labels = torch.tensor([label], dtype=torch.long).to(self.device)
+        
         # Forward pass
-        labels = inputs["input_ids"].detach().clone()
         outputs = self.model(**inputs, labels=labels)
         loss = outputs.loss
         
@@ -81,33 +85,62 @@ class SEALTrainer:
             outputs = self.model(**inputs)
         return outputs
         
-    def evaluate_accuracy(self, dataset_name="imdb", num_samples=10):
-        """Evaluate model accuracy on a small subset of a text classification dataset."""
+    def load_imdb(self, subset_size=500):
+        """Load a small subset of IMDB dataset for CPU testing."""
         try:
-            # For demonstration, we'll use a simple mock accuracy since we're using a masked LM
-            # In a real scenario, you'd want to use a proper classification head
-            print("📊 Running mock evaluation (using loss as proxy for accuracy)")
-            
-            # Generate some random text for evaluation
-            eval_text = "Machine learning is transforming the world."
-            inputs = self.tokenizer(eval_text, return_tensors="pt", truncation=True, padding=True).to(self.device)
-            
-            # Calculate loss on evaluation text
-            self.model.eval()
-            with torch.no_grad():
-                outputs = self.model(**inputs, labels=inputs["input_ids"])
-                loss = outputs.loss.item()
-            
-            # Convert loss to a mock accuracy (lower loss = higher accuracy)
-            # This is just for demonstration - in a real scenario, use proper metrics
-            mock_accuracy = max(0, min(1, 1.0 - (loss / 10.0)))  # Scale loss to [0,1] range
-            
-            print(f"📊 Evaluation loss: {loss:.4f} (mock accuracy: {mock_accuracy:.4f})")
-            return mock_accuracy
-            
+            ds = load_dataset("imdb", split="train[:5%]").shuffle(seed=42)
+            # Downsample for speed
+            small_ds = [{"text": ex["text"], "label": ex["label"]}
+                       for ex in ds.select(range(min(subset_size, len(ds))))]
+            print(f"📚 Loaded {len(small_ds)} IMDB samples.")
+            return small_ds
         except Exception as e:
-            print(f"⚠️  Accuracy evaluation failed: {str(e)}")
-            return 0.5  # Return 50% as a fallback
+            print(f"⚠️  Failed to load IMDB dataset: {str(e)}")
+            return []
+    
+    def evaluate_accuracy(self, dataset):
+        """Compute accuracy on provided dataset."""
+        if not dataset:
+            print("⚠️  Empty dataset provided for evaluation")
+            return 0.0
+            
+        self.model.eval()
+        preds, labels = [], []
+        
+        for i, ex in enumerate(dataset):
+            if i >= 100:  # Evaluate on max 100 samples for speed
+                break
+                
+            text, label = ex.get("text", ""), ex.get("label", 0)
+            if not text:
+                continue
+                
+            try:
+                inputs = self.tokenizer(
+                    text,
+                    return_tensors="pt",
+                    truncation=True,
+                    padding=True,
+                    max_length=512
+                ).to(self.device)
+                
+                with torch.no_grad():
+                    outputs = self.model(**inputs)
+                    pred = torch.argmax(outputs.logits, dim=-1).item()
+                    preds.append(pred)
+                    labels.append(label)
+                    
+            except Exception as e:
+                print(f"⚠️  Error processing sample {i}: {str(e)}")
+                continue
+        
+        if not preds:
+            print("⚠️  No valid predictions made")
+            return 0.0
+            
+        acc = accuracy_score(labels, preds)
+        print(f"📊 Accuracy on {len(preds)} samples: {acc:.4f}")
+        return acc
 
     def get_system_usage(self):
         """Log CPU and memory usage."""
