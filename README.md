@@ -1,12 +1,19 @@
-# Lightweight SEAL (Self-Edit Adaptive Learning)
+# Lightweight SEAL: Self-Edit Adaptive Learning
 
-A CPU-compatible implementation of SEAL using DistilBERT, optimized for local development and testing.
+A lightweight implementation of the SEAL (Self-Edit Adaptive Learning) framework for CPU-based model adaptation, featuring offline evaluation with the IMDB dataset.
 
-## 🚀 Features
+## 📋 Table of Contents
+- [Project Overview](#-project-overview)
+- [Features](#-features)
+- [Installation](#-installation)
+- [Project Structure](#-project-structure)
+- [Implementation Details](#-implementation-details)
+- [Metrics and Performance](#-metrics-and-performance)
+- [Troubleshooting](#-troubleshooting)
+- [Future Work](#-future-work)
+- [License](#-license)
 
-- **CPU-Optimized**: Runs efficiently on CPU-only machines
-- **Lightweight**: Uses DistilBERT for faster inference
-- **Modular Design**: Easy to extend with custom editing functions
+## 🌟 Project Overview
 - **Local Simulation**: Test editing functionality without API calls
 - **OpenAI Ready**: Simple switch to use OpenAI API when needed
 

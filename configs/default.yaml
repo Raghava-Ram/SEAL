@@ -3,98 +3,122 @@
 
 # Model configuration
 model:
-  # Base model to use for inference and fine-tuning
-  name: "distilbert-base-uncased"
-  # Device to run the model on (cpu, cuda, mps)
-  device: "cpu"
-  # Model precision (float32, float16, bfloat16)
-  torch_dtype: "float32"
+  # Model name or path
+  name_or_path: "distilbert-base-uncased"
+  # Number of labels for classification
+  num_labels: 2
+  # Dropout probability
+  dropout: 0.1
 
 # Training configuration
 training:
   # Batch size for training
-  batch_size: 1
-  # Maximum number of training steps
-  max_steps: 10
+  per_device_train_batch_size: 16
+  # Batch size for evaluation
+  per_device_eval_batch_size: 16
+  # Number of training epochs
+  num_train_epochs: 3
   # Learning rate
-  learning_rate: 5.0e-5
+  learning_rate: 2e-5
   # Weight decay
   weight_decay: 0.01
-  # Number of warmup steps for learning rate scheduler
-  warmup_steps: 100
-  # Gradient accumulation steps
-  gradient_accumulation_steps: 1
-  # Maximum gradient norm for gradient clipping
+  # Warmup steps
+  warmup_steps: 500
+  # Maximum gradient norm (for gradient clipping)
   max_grad_norm: 1.0
-
-# Evaluation configuration
-evaluation:
-  # Batch size for evaluation
-  batch_size: 8
-  # Number of beams for beam search (if applicable)
-  num_beams: 1
-  # Maximum length for generation
-  max_length: 100
-  # Number of sequences to generate
-  num_return_sequences: 1
-
-# Editing configuration
-editing:
-  # Edit mode: "local" for local simulation, "openai" for OpenAI API
-  mode: "local"
-  # Temperature for generation
-  temperature: 0.7
-  # Top-p sampling
-  top_p: 0.9
-  # Top-k sampling
-  top_k: 50
-
-# Logging and saving
-logging:
-  # Logging directory
-  log_dir: "./logs"
-  # Logging level (debug, info, warning, error, critical)
-  level: "info"
-  # Save model checkpoints
-  save_steps: 500
+  # Logging steps
+  logging_steps: 100
+  # Evaluation strategy (steps, epoch)
+  evaluation_strategy: "epoch"
+  # Save strategy (steps, epoch)
+  save_strategy: "epoch"
   # Save total limit
-  save_total_limit: 2
+  save_total_limit: 1
+  # Load best model at end
+  load_best_model_at_end: true
+  # Metric for best model
+  metric_for_best_model: "accuracy"
+  # Greater is better
+  greater_is_better: true
 
 # Data configuration
 data:
   # Maximum sequence length
-  max_seq_length: 512
-  # Whether to pad to max length
-  pad_to_max_length: true
-  # Number of workers for data loading
-  num_workers: 0
+  max_length: 128
+  # Text column name
+  text_column: "text"
+  # Label column name
+  label_column: "label"
+  # Test size for train/test split
+  test_size: 0.2
+  # Random seed
+  seed: 42
 
-# Random seed for reproducibility
-seed: 42
+# Editing configuration
+editing:
+  # Only local editing is supported
+  mode: "local"
+  # Whether to enable editing
+  enabled: true
+  # Number of edits to generate per input
+  num_edits: 1
+  # Whether to use beam search for generation
+  use_beam_search: false
+  # Number of beams for beam search
+  num_beams: 5
+  # Whether to use sampling
+  do_sample: true
+  # Top-k sampling
+  top_k: 50
+  # Top-p sampling
+  top_p: 0.95
+  # Repetition penalty
+  repetition_penalty: 1.2
+  # Length penalty
+  length_penalty: 1.0
+  # No repeat n-gram size
+  no_repeat_ngram_size: 3
+  # Whether to use cache
+  use_cache: true
+  # Whether to return full sequence
+  return_full_text: false
+  # Whether to skip special tokens in generation
+  skip_special_tokens: true
+  # Whether to clean up tokenization spaces
+  clean_up_tokenization_spaces: true
 
-# Whether to use mixed precision training (fp16)
-fp16: false
+# Logging configuration
+logging:
+  # Log level (debug, info, warning, error, critical)
+  level: "info"
+  # Log file
+  file: "logs/seal.log"
+  # Whether to log to console
+  console: true
+  # Whether to log to file
+  file_log: true
+  # Log format
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  # Date format
+  datefmt: "%Y-%m-%d %H:%M:%S"
 
-# Whether to use gradient checkpointing to save memory
-gradient_checkpointing: false
-
-# Path to save the final model
-output_dir: "./output"
-
-# Path to cache directory for Hugging Face datasets and models
-cache_dir: "./cache"
-
-# Whether to use a pretrained model
-use_pretrained: true
-
-# Whether to use LoRA for parameter-efficient fine-tuning
-use_lora: false
-
-# LoRA configuration (if use_lora is true)
-lora:
-  r: 8
-  lora_alpha: 16
-  lora_dropout: 0.1
-  bias: "none"
-  task_type: "CAUSAL_LM"
-  target_modules: ["q_proj", "v_proj"]
+# Output configuration
+output:
+  # Output directory
+  dir: "outputs"
+  # Whether to save predictions
+  save_predictions: true
+  # Whether to save metrics
+  save_metrics: true
+  # Whether to save model
+  save_model: true
+  # Whether to save tokenizer
+  save_tokenizer: true
+  # Whether to save config
+  save_config: true
+  # Whether to save training arguments
+  save_training_args: true
+  # Whether to save best model
+  save_best_model: true
+  # Whether to save full model
+  save_full_model: true

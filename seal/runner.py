@@ -7,12 +7,193 @@ import time
 import os
 import json
 import random
+import time
 import matplotlib.pyplot as plt
 from statistics import mean
+from datasets import load_dataset
 from seal.adapter import generate_edit
 from seal.trainer import SEALTrainer
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import yaml
+
+def run_imdb_comparison(config_path="configs/default.yaml"):
+    """
+    Compare SEAL performance using local vs OpenAI edits on the IMDB dataset.
+    
+    Args:
+        config_path: Path to the configuration file
+    """
+    print("🚀 Starting SEAL IMDB Local vs OpenAI Comparison\n")
+    
+    # Load config
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    
+    # Create output directory
+    output_dir = config.get("save_dir", "outputs")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Load dataset
+    print("📥 Loading IMDB dataset...")
+    try:
+        dataset = load_dataset("imdb", split="train")
+        # Convert to list of dicts for easier processing
+        imdb_data = [{"text": ex["text"], "label": ex["label"]} for ex in dataset]
+        print(f"✅ Loaded {len(imdb_data)} IMDB samples.\n")
+    except Exception as e:
+        print(f"❌ Failed to load IMDB dataset: {str(e)}")
+        return
+    
+    comparison_results = {}
+    edit_modes = config.get("edit_modes", ["local", "openai"])
+    
+    for mode in edit_modes:
+        print(f"\n{'='*50}")
+        print(f"🧠 Running SEAL in {mode.upper()} mode")
+        print(f"{'='*50}")
+        
+        # Initialize model and tokenizer
+        model_name = config.get("model_name", "distilbert-base-uncased")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_name,
+            num_labels=2  # Binary classification for IMDB
+        )
+        
+        # Initialize trainer
+        trainer = SEALTrainer(model, tokenizer, config)
+        
+        # Initialize metrics
+        loss_history = []
+        accuracy_history = []
+        cpu_log = []
+        mem_log = []
+        
+        # Run training loop
+        max_steps = config.get("max_steps", 10)
+        log_interval = config.get("log_interval", 2)
+        
+        for step in range(max_steps):
+            # Sample a random example
+            sample = random.choice(imdb_data)
+            
+            # Generate edit
+            try:
+                edit_text = generate_edit(
+                    sample["text"],
+                    mode=mode,
+                    label=sample["label"]
+                )
+                
+                # Train step
+                loss = trainer.train_step(edit_text, label=sample["label"])
+                loss_history.append(loss)
+                
+                # Log progress
+                print(f"📊 Step {step+1}/{max_steps} - Loss: {loss:.4f}")
+                
+                # Evaluate periodically
+                if (step + 1) % log_interval == 0 or step == max_steps - 1:
+                    # Evaluate on a small subset for efficiency
+                    eval_subset = random.sample(imdb_data, min(100, len(imdb_data)))
+                    accuracy = trainer.evaluate_accuracy(eval_subset)
+                    accuracy_history.append(accuracy)
+                    print(f"   ✅ Accuracy: {accuracy:.4f}")
+                
+                # Log system usage
+                usage = trainer.get_system_usage()
+                cpu_log.append(usage["cpu"])
+                mem_log.append(usage["memory"])
+                print(f"   💻 CPU: {usage['cpu']:.1f}% | Memory: {usage['memory']:.1f}%")
+                
+            except Exception as e:
+                print(f"⚠️ Error in {mode} mode, step {step}: {str(e)}")
+                continue
+        
+        # Save results for this mode
+        mode_results = {
+            "loss": loss_history,
+            "accuracy": accuracy_history,
+            "cpu_usage": cpu_log,
+            "memory_usage": mem_log,
+            "avg_cpu": sum(cpu_log) / len(cpu_log) if cpu_log else 0,
+            "avg_memory": sum(mem_log) / len(mem_log) if mem_log else 0,
+            "final_accuracy": accuracy_history[-1] if accuracy_history else 0,
+            "final_loss": loss_history[-1] if loss_history else 0
+        }
+        
+        # Save mode-specific results
+        output_file = os.path.join(output_dir, f"imdb_{mode}_results.json")
+        with open(output_file, "w") as f:
+            json.dump(mode_results, f, indent=2)
+        print(f"\n💾 Saved {mode} results to {output_file}")
+        
+        # Plot metrics
+        plt.figure(figsize=(10, 5))
+        
+        # Plot loss
+        plt.subplot(1, 2, 1)
+        plt.plot(loss_history, 'b-', label='Training Loss')
+        plt.title(f'Training Loss ({mode.upper()} Mode)')
+        plt.xlabel('Step')
+        plt.ylabel('Loss')
+        plt.grid(True, alpha=0.3)
+        
+        # Plot accuracy
+        if accuracy_history:
+            plt.subplot(1, 2, 2)
+            x = [i * log_interval for i in range(len(accuracy_history))]
+            plt.plot(x, accuracy_history, 'g-o', label='Accuracy')
+            plt.title(f'Accuracy ({mode.upper()} Mode)')
+            plt.xlabel('Step')
+            plt.ylabel('Accuracy')
+            plt.ylim(0, 1.1)
+            plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plot_file = os.path.join(output_dir, f"imdb_{mode}_metrics.png")
+        plt.savefig(plot_file)
+        plt.close()
+        print(f"📈 Saved {mode} metrics plot to {plot_file}")
+        
+        comparison_results[mode] = mode_results
+    
+    # Generate comparison summary
+    if len(comparison_results) > 1:
+        summary = {
+            "comparison_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "models_tested": list(comparison_results.keys()),
+            "results": {}
+        }
+        
+        # Add metrics for each mode
+        for mode, results in comparison_results.items():
+            summary["results"][mode] = {
+                "final_accuracy": results["final_accuracy"],
+                "final_loss": results["final_loss"],
+                "avg_cpu_usage": results["avg_cpu"],
+                "avg_memory_usage": results["avg_memory"],
+                "num_steps": len(results["loss"])
+            }
+        
+        # Save comparison summary
+        summary_file = os.path.join(output_dir, "imdb_comparison_summary.json")
+        with open(summary_file, "w") as f:
+            json.dump(summary, f, indent=2)
+        
+        print("\n" + "="*50)
+        print("📊 Comparison Summary")
+        print("="*50)
+        for mode, metrics in summary["results"].items():
+            print(f"\n🔹 {mode.upper()} Mode:")
+            print(f"   - Final Accuracy: {metrics['final_accuracy']:.4f}")
+            print(f"   - Final Loss: {metrics['final_loss']:.4f}")
+            print(f"   - Avg CPU: {metrics['avg_cpu_usage']:.1f}%")
+            print(f"   - Avg Memory: {metrics['avg_memory_usage']:.1f}%")
+        
+        print(f"\n📝 Full comparison summary saved to: {summary_file}")
+    
+    print("\n✅ IMDB comparison completed successfully!")
 
 def run_seal_loop(config_path="configs/default.yaml"):
     """
