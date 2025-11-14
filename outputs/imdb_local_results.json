@@ -1,0 +1,10 @@
+{
+  "loss": [],
+  "accuracy": [],
+  "cpu_usage": [],
+  "memory_usage": [],
+  "avg_cpu": 0,
+  "avg_memory": 0,
+  "final_accuracy": 0,
+  "final_loss": 0
+}

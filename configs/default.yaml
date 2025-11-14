@@ -1,6 +1,31 @@
 # SEAL Configuration
 # This is the default configuration file for SEAL (Self-Edit Adaptive Learning)
 
+# LLM Configuration
+llm:
+  # Backend to use for LLM (ollama or openai)
+  backend: "ollama"
+
+# Ollama Configuration
+ollama:
+  # Base URL of the Ollama server
+  host: "http://localhost:11434"
+  # Model to use (e.g., "qwen3:4b")
+  model: "llama2"
+  # Enable streaming responses
+  stream: true
+  # Request timeout in seconds
+  timeout: 30
+  # Maximum number of retries for failed requests
+  max_retries: 3
+
+# OpenAI Configuration (for backward compatibility)
+openai:
+  # Your OpenAI API key
+  api_key: ""
+  # Model to use (e.g., "gpt-3.5-turbo")
+  model: "gpt-3.5-turbo"
+
 # Model configuration
 model:
   # Model name or path

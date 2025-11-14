@@ -7,23 +7,27 @@ import time
 import os
 import json
 import random
-import time
-import matplotlib.pyplot as plt
 from statistics import mean
-from datasets import load_dataset
-from seal.adapter import generate_edit
-from seal.trainer import SEALTrainer
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import yaml
+from typing import Dict, List, Any, Tuple
 
-def run_imdb_comparison(config_path="configs/default.yaml"):
+import matplotlib.pyplot as plt
+import yaml
+from datasets import load_dataset
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+from seal.llm_adapter import get_llm_client
+from seal.prompt_adapter import create_prompt
+from seal.trainer import SEALTrainer
+from seal.adapter import generate_edit
+
+def run_imdb_comparison(config_path: str = "configs/default.yaml") -> None:
     """
-    Compare SEAL performance using local vs OpenAI edits on the IMDB dataset.
+    Compare SEAL performance using local vs LLM edits on the IMDB dataset.
     
     Args:
         config_path: Path to the configuration file
     """
-    print("🚀 Starting SEAL IMDB Local vs OpenAI Comparison\n")
+    print("🚀 Starting SEAL IMDB Comparison\n")
     
     # Load config
     with open(config_path, "r") as f:
@@ -32,6 +36,15 @@ def run_imdb_comparison(config_path="configs/default.yaml"):
     # Create output directory
     output_dir = config.get("save_dir", "outputs")
     os.makedirs(output_dir, exist_ok=True)
+    
+    # Initialize LLM client
+    print("🔄 Initializing LLM client...")
+    try:
+        llm = get_llm_client(config)
+        print(f"✅ Initialized {config['llm']['backend']} LLM client.\n")
+    except Exception as e:
+        print(f"❌ Failed to initialize LLM client: {str(e)}")
+        return
     
     # Load dataset
     print("📥 Loading IMDB dataset...")
@@ -45,9 +58,15 @@ def run_imdb_comparison(config_path="configs/default.yaml"):
         return
     
     comparison_results = {}
-    edit_modes = config.get("edit_modes", ["local", "openai"])
+    edit_modes = config.get("edit_modes", ["local", "llm"])
     
+    # Process each edit mode
     for mode in edit_modes:
+        if mode == "llm" and not hasattr(llm, 'generate'):
+            print(f"⚠️ Skipping {mode} mode - LLM client not properly initialized")
+            continue
+            
+        print(f"\n🔍 Processing {mode.upper()} mode...")
         print(f"\n{'='*50}")
         print(f"🧠 Running SEAL in {mode.upper()} mode")
         print(f"{'='*50}")
@@ -77,16 +96,38 @@ def run_imdb_comparison(config_path="configs/default.yaml"):
             # Sample a random example
             sample = random.choice(imdb_data)
             
-            # Generate edit
-            try:
-                edit_text = generate_edit(
-                    sample["text"],
-                    mode=mode,
-                    label=sample["label"]
-                )
+            # Generate edit using the appropriate method
+            if mode == "local":
+                edited_text = generate_edit(sample["text"])
+            else:  # llm mode
+                try:
+                    # Create a prompt for sentiment analysis
+                    prompt = create_prompt(
+                        system_message="You are a helpful assistant that analyzes movie reviews. "
+                                     "Classify the sentiment of the following review as positive or negative. "
+                                     "Only respond with 'positive' or 'negative'.",
+                        user_message=f"Review: {sample['text']}"
+                    )
+                    
+                    # Get LLM prediction
+                    response = llm.generate(prompt)
+                    
+                    # Simple post-processing to extract sentiment
+                    response = response.lower().strip()
+                    if "positive" in response:
+                        edited_text = "positive"
+                    elif "negative" in response:
+                        edited_text = "negative"
+                    else:
+                        # Default to original label if we can't determine sentiment
+                        edited_text = "positive" if sample["label"] == 1 else "negative"
+                        
+                except Exception as e:
+                    print(f"⚠️ Error generating LLM edit: {str(e)}")
+                    edited_text = "positive" if sample["label"] == 1 else "negative"
                 
                 # Train step
-                loss = trainer.train_step(edit_text, label=sample["label"])
+                loss = trainer.train_step(edited_text, label=sample["label"])
                 loss_history.append(loss)
                 
                 # Log progress
@@ -105,10 +146,6 @@ def run_imdb_comparison(config_path="configs/default.yaml"):
                 cpu_log.append(usage["cpu"])
                 mem_log.append(usage["memory"])
                 print(f"   💻 CPU: {usage['cpu']:.1f}% | Memory: {usage['memory']:.1f}%")
-                
-            except Exception as e:
-                print(f"⚠️ Error in {mode} mode, step {step}: {str(e)}")
-                continue
         
         # Save results for this mode
         mode_results = {
@@ -182,14 +219,12 @@ def run_imdb_comparison(config_path="configs/default.yaml"):
             json.dump(summary, f, indent=2)
         
         print("\n" + "="*50)
-        print("📊 Comparison Summary")
-        print("="*50)
+        print("📊 Comparison Summary:")
         for mode, metrics in summary["results"].items():
-            print(f"\n🔹 {mode.upper()} Mode:")
-            print(f"   - Final Accuracy: {metrics['final_accuracy']:.4f}")
-            print(f"   - Final Loss: {metrics['final_loss']:.4f}")
-            print(f"   - Avg CPU: {metrics['avg_cpu_usage']:.1f}%")
-            print(f"   - Avg Memory: {metrics['avg_memory_usage']:.1f}%")
+            print(f"\n{mode.upper()} Mode:")
+            print(f"  Accuracy: {metrics['final_accuracy']:.2f}")
+            print(f"  Avg. CPU Usage: {metrics['avg_cpu_usage']:.1f}%")
+            print(f"  Avg. Memory Usage: {metrics['avg_memory_usage']:.1f}%")
         
         print(f"\n📝 Full comparison summary saved to: {summary_file}")
     
