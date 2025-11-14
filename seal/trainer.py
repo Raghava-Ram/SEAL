@@ -6,6 +6,7 @@ import psutil
 import json
 import os
 import random
+from typing import List, Dict, Any, Tuple
 from transformers import AutoModelForSequenceClassification
 
 class SEALTrainer:
@@ -68,6 +69,111 @@ class SEALTrainer:
         self.optimizer.zero_grad()
         
         return loss.item()
+        
+    def predict_with_confidence(self, text):
+        """
+        Get model prediction and confidence for a single text input.
+        
+        Args:
+            text: Input text to predict on
+            
+        Returns:
+            tuple: (predicted_label, confidence_score)
+        """
+        self.model.eval()
+        device = next(self.model.parameters()).device
+        
+        # Tokenize and prepare input
+        inputs = self.tokenizer(
+            text, 
+            return_tensors="pt", 
+            truncation=True, 
+            padding=True
+        )
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        # Get model predictions
+        with torch.no_grad():
+            out = self.model(**inputs)
+            probs = torch.softmax(out.logits, dim=-1)[0].cpu().numpy()
+
+        # Get prediction and confidence
+        pred_idx = int(probs.argmax())
+        conf = float(probs[pred_idx])
+        label = "positive" if pred_idx == 1 else "negative"
+        return label, conf
+
+    def train_on_batch(self, texts: List[str], labels: List[int]) -> float:
+        """
+        Train on a batch of examples.
+        
+        Args:
+            texts: List of input texts
+            labels: List of integer labels (0 or 1)
+            
+        Returns:
+            float: Training loss
+            
+        Raises:
+            ValueError: If no valid texts or labels are provided
+        """
+        if not texts or not labels:
+            raise ValueError("Texts and labels cannot be empty")
+            
+        # Ensure all labels are valid (0 or 1)
+        valid_labels = []
+        valid_texts = []
+        for text, label in zip(texts, labels):
+            if label in [0, 1]:
+                valid_labels.append(label)
+                valid_texts.append(text)
+                
+        if not valid_texts:
+            raise ValueError("No valid labels found in batch")
+            
+        self.model.train()
+        device = next(self.model.parameters()).device
+        
+        try:
+            # Tokenize inputs
+            inputs = self.tokenizer(
+                valid_texts, 
+                return_tensors="pt", 
+                truncation=True, 
+                padding=True,
+                max_length=512  # Add max_length to prevent very long sequences
+            )
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            # Convert labels to tensor
+            labels_tensor = torch.tensor(valid_labels, dtype=torch.long, device=device)
+
+            # Forward and backward pass
+            out = self.model(**inputs, labels=labels_tensor)
+            loss = out.loss
+
+            if loss is not None:
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+                return float(loss.item())
+            return 0.0
+            
+        except Exception as e:
+            print(f"Error in train_on_batch: {str(e)}")
+            return 0.0  # Return 0 loss on error to continue training
+
+    def save_checkpoint(self, path: str):
+        """
+        Save model checkpoint.
+        
+        Args:
+            path: Path to save checkpoint
+        """
+        torch.save({
+            "model": self.model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+        }, path)
 
     def evaluate(self, text):
         """
@@ -99,23 +205,40 @@ class SEALTrainer:
             return []
     
     def evaluate_accuracy(self, dataset):
-        """Compute accuracy on provided dataset."""
+        """
+        Compute accuracy on provided dataset.
+        
+        Args:
+            dataset: List of dicts with 'text' and 'label' keys
+            
+        Returns:
+            float: Accuracy score between 0 and 1
+        """
         if not dataset:
             print("⚠️  Empty dataset provided for evaluation")
             return 0.0
             
         self.model.eval()
-        preds, labels = [], []
+        correct = 0
+        total = 0
         
         for i, ex in enumerate(dataset):
             if i >= 100:  # Evaluate on max 100 samples for speed
                 break
                 
-            text, label = ex.get("text", ""), ex.get("label", 0)
+            text, true_label = ex.get("text", ""), ex.get("label", 0)
             if not text:
                 continue
                 
             try:
+                # For local mode, text is already the prediction ("positive" or "negative")
+                if isinstance(text, str) and text.lower() in ["positive", "negative"]:
+                    pred = 1 if text.lower() == "positive" else 0
+                    correct += 1 if pred == true_label else 0
+                    total += 1
+                    continue
+                    
+                # For LLM mode or other cases where we need to make a prediction
                 inputs = self.tokenizer(
                     text,
                     return_tensors="pt",
@@ -127,20 +250,20 @@ class SEALTrainer:
                 with torch.no_grad():
                     outputs = self.model(**inputs)
                     pred = torch.argmax(outputs.logits, dim=-1).item()
-                    preds.append(pred)
-                    labels.append(label)
+                    correct += 1 if pred == true_label else 0
+                    total += 1
                     
             except Exception as e:
                 print(f"⚠️  Error processing sample {i}: {str(e)}")
                 continue
         
-        if not preds:
+        if total == 0:
             print("⚠️  No valid predictions made")
             return 0.0
             
-        acc = accuracy_score(labels, preds)
-        print(f"📊 Accuracy on {len(preds)} samples: {acc:.4f}")
-        return acc
+        accuracy = correct / total
+        print(f"📊 Accuracy on {total} samples: {accuracy:.4f} ({correct}/{total})")
+        return accuracy
 
     def get_system_usage(self):
         """Log CPU and memory usage."""

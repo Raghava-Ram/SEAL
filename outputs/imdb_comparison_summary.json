@@ -1,5 +1,5 @@
 {
-  "comparison_timestamp": "2025-11-14 12:01:36",
+  "comparison_timestamp": "2025-11-14 19:20:31",
   "models_tested": [
     "local",
     "llm"
@@ -14,9 +14,9 @@
     },
     "llm": {
       "final_accuracy": 0.46,
-      "final_loss": 0.34200361371040344,
-      "avg_cpu_usage": 40.019999999999996,
-      "avg_memory_usage": 77.09,
+      "final_loss": 0.40332770347595215,
+      "avg_cpu_usage": 21.050000000000004,
+      "avg_memory_usage": 78.64,
       "num_steps": 10
     }
   }

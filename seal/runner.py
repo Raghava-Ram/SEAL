@@ -19,6 +19,9 @@ from seal.llm_adapter import get_llm_client
 from seal.prompt_adapter import create_prompt
 from seal.trainer import SEALTrainer
 from seal.adapter import generate_edit
+from seal.memory import EditCache
+from seal.utility import score_edit_simple
+from seal.replay import mix_batches
 
 def run_imdb_comparison(config_path: str = "configs/default.yaml") -> None:
     """
@@ -288,8 +291,14 @@ def run_seal_loop(config_path="configs/default.yaml"):
         initial_usage = trainer.get_system_usage()
         print(f"\n🔧 Initial System Usage - CPU: {initial_usage['cpu']}% | Memory: {initial_usage['memory']}%")
         
+        # Initialize memory
+        memory = EditCache(
+            path=config["memory"]["path"],
+            max_size=config["memory"]["max_size"]
+        )
+        
         # Run SEAL loop
-        max_steps = config.get("max_steps", 10)
+        max_steps = config.get("trainer", {}).get("max_steps", 10)
         
         # Initial evaluation before any training
         print("\n🔍 Running initial evaluation...")
@@ -297,32 +306,72 @@ def run_seal_loop(config_path="configs/default.yaml"):
         accuracy_history.append(initial_acc)
         print(f"📊 Initial Accuracy: {initial_acc:.4f}")
         
-        for iteration in range(max_steps):
-            print(f"\n🔁 SEAL Iteration {iteration+1}/{max_steps}")
-            
-            # 1. Sample from IMDB and generate edit
+        for step in range(max_steps):
+            print(f"\n🔁 SEAL Step {step+1}/{max_steps}")
+
+            # 1. Sample IMDB example
             sample = random.choice(imdb_data)
-            original_text = sample["text"][:200] + "..."  # Truncate for display
-            edit = generate_edit(sample["text"], mode=config.get("edit_mode", "local"))
-            print(f"📝 Original: {original_text}")
-            print(f"✏️  Edited  : {edit[:200]}...")
+            original = sample["text"]
+            label = sample["label"]
+
+            # 2. Generate edit (local or llm)
+            edited = generate_edit(original, label=label)
+
+            # 3. Get predictions before & after
+            pred_before, conf_before = trainer.predict_with_confidence(original)
+            pred_after, conf_after = trainer.predict_with_confidence(edited)
+
+            # 4. Build edit record
+            edit_obj = {
+                "original": original,
+                "edit": edited,
+                "label": label,
+                "pred_before": pred_before,
+                "pred_after": pred_after,
+                "conf_before": conf_before,
+                "conf_after": conf_after
+            }
+
+            # 5. Utility score
+            utility = score_edit_simple(edit_obj)
+            edit_obj["utility"] = utility
+
+            # 6. Store in memory
+            memory.add_edit(edit_obj)
+
+            # 7. Create batch using replay
+            batch = mix_batches(
+                new_examples=[{"text": edited, "label": label}],
+                memory=memory,
+                batch_size=config["replay"]["batch_size"],
+                replay_fraction=config["replay"]["replay_fraction"],
+                policy=config["replay"]["policy"]
+            )
+
+            texts = [b["text"] for b in batch]
+            labels = [b["label"] for b in batch]
+
+            # 8. Train on mixed batch
+            loss = trainer.train_on_batch(texts, labels)
             
-            # 2. Fine-tune model on the edited text (use the sample's label)
-            loss = trainer.train_step(edit, label=sample["label"])
+            # Update tracking
             loss_history.append(loss)
-            print(f"📉 Training Loss: {loss:.4f}")
             
-            # 3. Periodically evaluate accuracy (every 2 steps or on last iteration)
-            if (iteration + 1) % 2 == 0 or iteration == max_steps - 1:
-                acc = trainer.evaluate_accuracy(imdb_data[:100])  # Use first 100 samples for evaluation
+            # Log progress
+            print(f"📉 Loss: {loss:.4f} | Utility: {utility:.4f}")
+
+            # 9. Periodic evaluation
+            if (step + 1) % config["trainer"].get("eval_interval", 10) == 0 or step == max_steps - 1:
+                acc = trainer.evaluate_accuracy(imdb_data[:100])
                 accuracy_history.append(acc)
-            
-            # 4. Log system resources
-            usage = trainer.get_system_usage()
-            cpu_log.append(usage["cpu"])
-            mem_log.append(usage["memory"])
-            print(f"⚙️  CPU: {usage['cpu']}% | Memory: {usage['memory']}%")
-            
+                print(f"📊 Eval Accuracy: {acc:.4f}")
+                
+                # Log system usage
+                usage = trainer.get_system_usage()
+                cpu_log.append(usage['cpu'])
+                mem_log.append(usage['memory'])
+                print(f"💻 System Usage - CPU: {usage['cpu']}% | Memory: {usage['memory']}%")
+                
             # Small delay for better readability
             time.sleep(1)
         

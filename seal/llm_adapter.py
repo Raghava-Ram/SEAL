@@ -30,6 +30,21 @@ class OllamaAdapter(LLMClient):
             Generated text
         """
         return self.client.generate(prompt, **kwargs)
+        
+    def edit(self, text: str, target_label: int = 1, **kwargs) -> str:
+        """Edit the given text to match the target label.
+        
+        Args:
+            text: The text to edit
+            target_label: The target sentiment label (0 for negative, 1 for positive)
+            **kwargs: Additional parameters
+            
+        Returns:
+            Edited text
+        """
+        sentiment = "positive" if target_label == 1 else "negative"
+        prompt = f"Rewrite the following text to have a {sentiment} sentiment: {text}"
+        return self.generate(prompt, **kwargs)
 
 class OpenAIAdapter(LLMClient):
     """Adapter for OpenAI API client (for backward compatibility)."""

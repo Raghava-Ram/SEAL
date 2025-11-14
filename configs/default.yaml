@@ -1,6 +1,11 @@
 # SEAL Configuration
 # This is the default configuration file for SEAL (Self-Edit Adaptive Learning)
 
+# Editing Configuration
+editing:
+  mode: local  # 'local' or 'llm'
+  return_type: label  # 'label' or 'text'
+
 # LLM Configuration
 llm:
   # Backend to use for LLM (ollama or openai)
@@ -10,14 +15,49 @@ llm:
 ollama:
   # Base URL of the Ollama server
   host: "http://localhost:11434"
-  # Model to use (e.g., "qwen3:4b")
+  # Model to use
   model: "llama2"
-  # Enable streaming responses
-  stream: true
   # Request timeout in seconds
-  timeout: 30
+  timeout: 120
+  # Enable streaming responses
+  stream: false
   # Maximum number of retries for failed requests
   max_retries: 3
+
+# Memory Configuration
+memory:
+  # Storage type (only jsonl supported for now)
+  type: jsonl
+  # Path to store edit history
+  path: "memory/edits.jsonl"
+  # Maximum number of edits to store
+  max_size: 20000
+
+# Replay Configuration
+replay:
+  # Batch size for training
+  batch_size: 8
+  # Fraction of batch to fill with replayed examples
+  replay_fraction: 0.5
+  # Sampling policy ('priority' or 'uniform')
+  policy: priority
+
+# Trainer Configuration
+trainer:
+  # Learning rate
+  learning_rate: 1e-4
+  # Maximum number of training steps
+  max_steps: 1000
+  # Evaluate every N steps
+  eval_interval: 10
+  # Device to use for training
+  device: cpu
+
+# Datasets Configuration
+datasets:
+  - imdb
+  - squad
+  - arc_agi_subset
 
 # OpenAI Configuration (for backward compatibility)
 openai:
