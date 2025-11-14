@@ -285,7 +285,7 @@ def generate_edit(text: str, label: Optional[int] = None, **kwargs) -> str:
     
     Args:
         text: Input text to be edited
-        label: Optional label for the text (e.g., sentiment)
+        label: Target sentiment label (0 for negative, 1 for positive)
         mode: Either 'local' or 'llm' to specify the editing mode
         **kwargs: Additional arguments for the edit
         
@@ -301,4 +301,10 @@ def generate_edit(text: str, label: Optional[int] = None, **kwargs) -> str:
         # Force reinitialization of LLM if needed
         if kwargs['mode'] == 'llm' and editor.llm is None:
             editor._init_llm_if_needed()
-    return editor.edit(text, label, **kwargs)
+    
+    # Handle target_label parameter (preferred) or fall back to label
+    target_label = kwargs.pop('target_label', label)
+    if target_label is None:
+        target_label = 1  # Default to positive sentiment if no label provided
+    
+    return editor.edit(text, target_label=target_label, **kwargs)

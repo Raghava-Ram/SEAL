@@ -101,7 +101,31 @@ def run_imdb_comparison(config_path: str = "configs/default.yaml") -> None:
             
             # Generate edit using the appropriate method
             if mode == "local":
-                edited_text = generate_edit(sample["text"])
+                # Get the opposite sentiment for the edit
+                target_label = 1 - sample["label"]  # Flip the label for the edit
+                edited_text = generate_edit(sample["text"], target_label=target_label, mode="local")
+                
+                # Train step with the edited text and target label
+                loss = trainer.train_step(edited_text, label=target_label)
+                loss_history.append(loss)
+                
+                # Log progress
+                print(f"📊 Step {step+1}/{max_steps} - Loss: {loss:.4f}")
+                
+                # Evaluate periodically
+                if (step + 1) % log_interval == 0 or step == max_steps - 1:
+                    # Evaluate on a small subset for efficiency
+                    eval_subset = random.sample(imdb_data, min(100, len(imdb_data)))
+                    accuracy = trainer.evaluate_accuracy(eval_subset)
+                    accuracy_history.append(accuracy)
+                    print(f"   ✅ Accuracy: {accuracy:.4f}")
+                
+                # Log system usage
+                usage = trainer.get_system_usage()
+                cpu_log.append(usage["cpu"])
+                mem_log.append(usage["memory"])
+                print(f"   💻 CPU: {usage['cpu']:.1f}% | Memory: {usage['memory']:.1f}%")
+                
             else:  # llm mode
                 try:
                     # Create a prompt for sentiment analysis
