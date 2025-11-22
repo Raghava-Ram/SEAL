@@ -164,16 +164,50 @@ class SEALTrainer:
             return 0.0  # Return 0 loss on error to continue training
 
     def save_checkpoint(self, path: str):
+        """Save model checkpoint"""
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save({
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'tokenizer': self.tokenizer,
+            'config': self.config
+        }, path)
+        print(f"✅ Checkpoint saved to {path}")
+        
+    def predict(self, texts: List[str], batch_size: int = 32) -> List[int]:
         """
-        Save model checkpoint.
+        Make predictions on a list of input texts.
         
         Args:
-            path: Path to save checkpoint
+            texts: List of input text strings
+            batch_size: Batch size for prediction
+            
+        Returns:
+            List of predicted class indices
         """
-        torch.save({
-            "model": self.model.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
-        }, path)
+        self.model.eval()
+        predictions = []
+        
+        # Process in batches
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
+            
+            # Tokenize and prepare batch
+            inputs = self.tokenizer(
+                batch_texts,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt"
+            ).to(self.device)
+            
+            # Make prediction
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+                batch_preds = torch.argmax(outputs.logits, dim=1).cpu().numpy()
+                predictions.extend(batch_preds.tolist())
+        
+        return predictions
 
     def evaluate(self, text):
         """

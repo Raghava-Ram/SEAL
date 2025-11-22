@@ -7,13 +7,15 @@ import time
 import os
 import json
 import random
+import torch
 from statistics import mean
 from typing import Dict, List, Any, Tuple
 
 import matplotlib.pyplot as plt
 import yaml
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from torch import nn
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, AutoConfig
 
 from seal.llm_adapter import get_llm_client
 from seal.prompt_adapter import create_prompt
@@ -467,5 +469,224 @@ def run_seal_loop(config_path="configs/default.yaml"):
 
     print("\n✅ SEAL architectural base loop executed successfully on CPU.")
 
+def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
+    """
+    Run sequential multi-task learning with task balancing and evaluation.
+    
+    Args:
+        config_path: Path to the configuration file
+    """
+    print("🚀 Starting SEAL Multi-Task Learning\n")
+    
+    # Load config
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    
+    # Get task configuration
+    task_config = config.get("tasks", {})
+    task_order = task_config.get("order", ["imdb", "squad", "arc"])
+    steps_per_task = task_config.get("steps", 300)
+    eval_size = task_config.get("eval_size", 200)
+    
+    # Initialize components
+    model_name = config.get("model_name", "distilbert-base-uncased")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name,
+        num_labels=2  # Will be updated for each task
+    )
+    
+    # Initialize trainer and memory
+    trainer = SEALTrainer(model, tokenizer, config)
+    memory = EditCache()
+    
+    # Track task-specific data and metrics
+    task_datasets = {}
+    task_val_sets = {}
+    task_metrics = {task: [] for task in task_order}
+    
+    # Load task datasets
+    print("📥 Loading task datasets...")
+    from seal.tasks import get_task_loader
+    
+    for task_name in task_order:
+        try:
+            loader = get_task_loader(task_name)
+            task_data = loader()
+            
+            # Split into train/val
+            if len(task_data) > eval_size * 2:
+                task_datasets[task_name] = task_data[eval_size:]
+                task_val_sets[task_name] = task_data[:eval_size]
+            else:
+                task_datasets[task_name] = task_data
+                task_val_sets[task_name] = []
+                
+            print(f"   ✅ Loaded {len(task_datasets[task_name])} examples for {task_name}")
+            
+        except Exception as e:
+            print(f"❌ Failed to load task {task_name}: {str(e)}")
+            return
+    
+    # Main training loop over tasks
+    for task_idx, task_name in enumerate(task_order):
+        print(f"\n{'='*50}")
+        print(f"🎯 Training on task {task_idx+1}/{len(task_order)}: {task_name.upper()}")
+        print(f"{'='*50}")
+        
+        task_data = task_datasets[task_name]
+        
+        # Update model's classifier if needed (for tasks with different numbers of classes)
+        num_labels = len(set(example["label"] for example in task_data))
+        if hasattr(model, 'num_labels') and model.num_labels != num_labels:
+            print(f"🔄 Updating classifier for {num_labels} classes")
+            # Get the model configuration and update num_labels
+            config = model.config
+            config.num_labels = num_labels
+            
+            # Create a new model with the updated configuration
+            device = model.device
+            new_model = AutoModelForSequenceClassification.from_config(config)
+            
+            # Copy the weights from the old model to the new one
+            # First, copy all the base model weights
+            new_model.distilbert.load_state_dict(model.distilbert.state_dict())
+            
+            # Initialize the new classifier with the right dimensions
+            in_features = model.classifier.in_features if hasattr(model, 'classifier') else model.config.hidden_size
+            new_model.classifier = nn.Linear(in_features, num_labels)
+            
+            # If we're keeping the same device, move the new model there
+            model = new_model.to(device)
+            # Update the trainer's model reference
+            trainer.model = model
+        
+        # Training loop for current task
+        for step in range(steps_per_task):
+            # Sample a batch
+            batch = random.sample(task_data, min(config.get("batch_size", 32), len(task_data)))
+            
+            # Generate edits for the batch
+            edited_batch = []
+            for example in batch:
+                try:
+                    # For classification tasks, flip the label for editing
+                    if task_name == "imdb":
+                        target_label = 1 - example["label"]
+                        edited_text = generate_edit(
+                            example["text"], 
+                            target_label=target_label,
+                            mode=config.get("editing", {}).get("mode", "local")
+                        )
+                        edited_batch.append({
+                            "text": edited_text,
+                            "label": target_label,
+                            "task": task_name,
+                            "original_text": example["text"],
+                            "original_label": example["label"]
+                        })
+                    else:
+                        # For other tasks, just use the original example for now
+                        edited_batch.append({
+                            "text": example["text"],
+                            "label": example["label"],
+                            "task": task_name
+                        })
+                except Exception as e:
+                    print(f"⚠️ Error generating edit: {str(e)}")
+            
+            # Sample from memory for replay
+            replay_batch = []
+            if memory and step > 0:  # Wait until we have some memory
+                replay_size = int(len(edited_batch) * config.get("replay", {}).get("fraction", 0.3))
+                if replay_size > 0:
+                    replay_batch = memory.sample(
+                        replay_size,
+                        task_balance=config.get("replay", {}).get("task_balance", True),
+                        alpha=config.get("replay", {}).get("alpha", 1.0)
+                    )
+            
+            # Combine batches and train
+            combined_batch = edited_batch + replay_batch
+            random.shuffle(combined_batch)
+            
+            # Ensure we have valid data in the combined batch
+            valid_batch = [item for item in combined_batch if "text" in item and "label" in item]
+            if not valid_batch:
+                print("⚠️ No valid examples in batch, skipping...")
+                continue
+                
+            # Extract texts and labels
+            texts = [item["text"] for item in valid_batch]
+            labels = [item["label"] for item in valid_batch]
+            
+            # Train on the batch
+            try:
+                loss = trainer.train_on_batch(texts, labels)
+            except Exception as e:
+                print(f"⚠️ Error in training batch: {str(e)}")
+                continue
+            
+            # Store edits in memory with utility scores
+            for edit in edited_batch:
+                # Simple utility: 1.0 for now, can be enhanced
+                edit["utility"] = 1.0
+                memory.add_edit(edit)
+            
+            # Log progress
+            if (step + 1) % 10 == 0 or step == steps_per_task - 1:
+                print(f"📊 Task {task_name} | Step {step+1}/{steps_per_task} | Loss: {loss:.4f}")
+        
+        # Evaluate on all tasks seen so far
+        print("\n🔍 Evaluating on all tasks...")
+        for eval_task in task_order[:task_idx+1]:
+            try:
+                val_set = task_val_sets.get(eval_task, [])
+                if not val_set:
+                    print(f"⚠️  No validation set for task {eval_task}")
+                    continue
+                
+                # Get texts and true labels
+                texts = [ex["text"] for ex in val_set[:100]]  # Evaluate on first 100 examples
+                true_labels = [ex["label"] for ex in val_set[:100]]
+                
+                # Get predictions in batches
+                predictions = trainer.predict(texts)
+                
+                # Calculate accuracy
+                accuracy = accuracy_score(true_labels, predictions)
+                
+                # Update results
+                if eval_task not in results:
+                    results[eval_task] = {}
+                results[eval_task][f"after_task_{task_idx}"] = accuracy
+                print(f"   ✅ {eval_task.upper()} accuracy: {accuracy:.4f}")
+                
+            except Exception as e:
+                print(f"⚠️  Error evaluating {eval_task}: {str(e)}")
+    
+    # Generate final evaluation report
+    print("\n📊 Generating evaluation report...")
+    from seal.eval_multi_domain import generate_evaluation_report
+    
+    # Prepare accuracy matrix (fill with None for tasks not yet seen)
+    accuracy_matrix = {}
+    for i, task in enumerate(task_order):
+        accs = task_metrics[task]
+        # Pad with None for tasks not yet seen when this task was trained
+        accs = [None] * i + accs
+        accuracy_matrix[task] = accs
+    
+    # Generate and save report
+    report = generate_evaluation_report(
+        accuracy_matrix,
+        output_dir=os.path.join(config.get("save_dir", "outputs"), "multi_task"),
+        prefix=f"{'_'.join(task_order)}_"
+    )
+    
+    print("\n✅ Multi-task learning completed!")
+    print(f"📝 Report saved to: {os.path.join(config.get('save_dir', 'outputs'), 'multi_task')}")
+
+
 if __name__ == "__main__":
-    run_seal_loop()
+    run_sequential_tasks()

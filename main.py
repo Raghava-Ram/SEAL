@@ -6,7 +6,7 @@ Main entry point for the SEAL Lightweight Continual Learning Framework.
 import argparse
 import os
 
-from seal.runner import run_seal_loop, run_imdb_comparison
+from seal.runner import run_seal_loop, run_imdb_comparison, run_sequential_tasks
 
 # Optional demo import if exists
 try:
@@ -60,8 +60,13 @@ def main():
             print("⚠️ demo_seal.py not found — demo mode unavailable.")
 
     elif args.mode == "tasks":
-        print("\n⚠️ Multi-task continual learning not implemented yet.")
-        print("   (Future: IMDB → SQuAD → ARC sequence.)")
+        print("\n🚀 Starting multi-task continual learning...")
+        try:
+            run_sequential_tasks(args.config)
+        except Exception as e:
+            print(f"❌ Error in multi-task learning: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     else:
         print("❌ Unknown mode. Use --help for guidance.")
