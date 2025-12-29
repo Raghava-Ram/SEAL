@@ -40,10 +40,19 @@ class EditCache:
 
     def add_edit(self, edit: Dict[str, Any]) -> str:
         # Ensure consistent structure with required fields
+        # Normalize label: coerce to int when possible and ensure non-negative
+        raw_label = edit.get("label", 0)
+        try:
+            label_int = int(float(raw_label))
+        except Exception:
+            label_int = 0
+        if label_int < 0:
+            label_int = 0
+
         e = {
             "id": str(uuid.uuid4()),
             "text": edit.get("text", ""),
-            "label": edit.get("label", 0),
+            "label": label_int,
             "task": edit.get("task", "unknown"),
             "utility": float(edit.get("utility", 0.0)),
             "original_text": edit.get("original_text", ""),

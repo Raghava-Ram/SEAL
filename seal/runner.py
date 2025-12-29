@@ -8,13 +8,17 @@ import os
 import json
 import random
 import torch
+import numpy as np
 from statistics import mean
+from collections import Counter
 from typing import Dict, List, Any, Tuple
 
 import matplotlib.pyplot as plt
 import yaml
 from datasets import load_dataset
+from sklearn.metrics import accuracy_score
 from torch import nn
+from torch.optim import AdamW
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, AutoConfig
 
 from seal.llm_adapter import get_llm_client
@@ -79,12 +83,146 @@ def run_imdb_comparison(config_path: str = "configs/default.yaml") -> None:
         # Initialize model and tokenizer
         model_name = config.get("model_name", "distilbert-base-uncased")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForSequenceClassification.from_pretrained(
+        print("🚀 Starting SEAL Multi-Task Learning")
+        
+        # Set device
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {device}")
+        
+        # Load model with proper configuration
+        print("\n=== Initializing Model ===")
+        model_config = AutoConfig.from_pretrained(
             model_name,
-            num_labels=2  # Binary classification for IMDB
+            num_labels=2,
+            output_attentions=False,
+            output_hidden_states=False,
+            torch_dtype=torch.float32  # Ensure config specifies float32
         )
         
-        # Initialize trainer
+        # Initialize model with explicit float32 precision
+        print(f"Loading model with config: {model_config}")
+        try:
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_name,
+                config=model_config,
+                ignore_mismatched_sizes=True
+            )
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            print("Trying with from_config...")
+            model = AutoModelForSequenceClassification.from_config(model_config)
+        
+        # Ensure model is in float32 and on the correct device
+        model = model.to(device).float()
+        print(f"Model loaded on {device} with dtype {next(model.parameters()).dtype}")
+        
+        # Reinitialize the classifier with proper initialization
+        if hasattr(model, 'classifier'):
+            in_features = model.classifier.in_features if hasattr(model.classifier, 'in_features') else model.config.hidden_size
+            print(f"Reinitializing classifier with in_features={in_features}, out_features=2")
+            
+            # Create new classifier with explicit float32 weights
+            new_classifier = nn.Sequential(
+                nn.Dropout(0.1),
+                nn.Linear(in_features, 2, dtype=torch.float32)
+            ).to(device)
+            
+            # Initialize weights with proper scaling
+            for module in new_classifier.modules():
+                if isinstance(module, nn.Linear):
+                    print(f"Initializing {module} weights")
+                    nn.init.xavier_uniform_(module.weight, gain=1.0)
+                    if module.bias is not None:
+                        nn.init.constant_(module.bias, 0)
+            
+            model.classifier = new_classifier
+        
+        # Double-check all parameters are float32 and on the right device
+        print("\n=== Verifying Parameter Types ===")
+        param_dtypes = {}
+        for name, param in model.named_parameters():
+            if param.dtype != torch.float32:
+                print(f"Converting {name} from {param.dtype} to float32")
+                param.data = param.data.to(torch.float32)
+            if param.device != device:
+                print(f"Moving {name} to {device}")
+                param.data = param.data.to(device)
+            # Track parameter dtypes
+            param_dtypes[param.dtype] = param_dtypes.get(param.dtype, 0) + 1
+        
+        print(f"\nParameter dtype distribution: {param_dtypes}")
+        
+        # Print model summary
+        print("\n=== Model Summary ===")
+        print(f"Device: {next(model.parameters()).device}")
+        print(f"Dtype: {next(model.parameters()).dtype}")
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Total parameters: {total_params:,}")
+        print(f"Trainable parameters: {trainable_params:,}")
+        
+        # Print model architecture for debugging
+        print("\n=== Model Architecture ===")
+        print(model)
+        print("\n" + "="*50 + "\n")
+        
+        # Verify model forward pass with dummy input
+        try:
+            print("Verifying model forward pass...")
+            with torch.no_grad():
+                dummy_input = {
+                    'input_ids': torch.randint(0, 100, (2, 16), device=device, dtype=torch.long),
+                    'attention_mask': torch.ones((2, 16), device=device, dtype=torch.long)
+                }
+                output = model(**dummy_input)
+                print(f"Forward pass successful! Output shape: {output.logits.shape if hasattr(output, 'logits') else 'N/A'}")
+        except Exception as e:
+            print(f"Error during forward pass check: {e}")
+        
+        print("\n" + "="*50 + "\n")
+        
+        return model
+        
+        # Ensure all parameters are float32 and on the right device
+        for name, param in model.named_parameters():
+            if param.dtype != torch.float32:
+                print(f"Converting {name} from {param.dtype} to float32")
+                param.data = param.data.float()
+            if param.device != device:
+                param.data = param.data.to(device)
+        
+        # Set model to train mode
+        model.train()
+        
+        # Print model info
+        print("\n=== Model Configuration ===")
+        print(f"Model device: {next(model.parameters()).device}")
+        print(f"Model dtype: {next(model.parameters()).dtype}")
+        print(f"Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+        print("=========================\n")
+        
+        # Print model summary
+        print("\n=== Model Summary ===")
+        print(f"Device: {next(model.parameters()).device}")
+        print(f"Dtype: {next(model.parameters()).dtype}")
+        print(f"Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+        print("===================\n")
+        
+        # Print model device and dtype for debugging
+        print(f"Model device: {next(model.parameters()).device}")
+        print(f"Model dtype: {next(model.parameters()).dtype}")
+        
+        # Set model to train mode
+        model.train()
+        
+        # Verify all parameters are float32
+        for name, param in model.named_parameters():
+            if param.dtype != torch.float32:
+                print(f"Converting {name} from {param.dtype} to float32")
+                param.data = param.data.float()
+        
+        # Initialize trainer and ensure model is float32
+        model = model.to(torch.float32)
         trainer = SEALTrainer(model, tokenizer, config)
         
         # Initialize metrics
@@ -503,7 +641,10 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
     # Track task-specific data and metrics
     task_datasets = {}
     task_val_sets = {}
+    # Initialize task_metrics with empty lists for each task
     task_metrics = {task: [] for task in task_order}
+    # Track which tasks have been evaluated at each step
+    task_evaluations = {task: [] for task in task_order}
     
     # Load task datasets
     print("📥 Loading task datasets...")
@@ -512,15 +653,40 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
     for task_name in task_order:
         try:
             loader = get_task_loader(task_name)
-            task_data = loader()
+            # Get task-specific config including limit
+            task_config = config.get('tasks', {}).get(task_name, {})
+            task_limit = task_config.get('limit')
             
-            # Split into train/val
-            if len(task_data) > eval_size * 2:
-                task_datasets[task_name] = task_data[eval_size:]
-                task_val_sets[task_name] = task_data[:eval_size]
+            # Load data with limit if specified
+            task_data = loader(task_size=task_limit) if task_limit else loader()
+            
+            # Shuffle the data before splitting
+            import random
+            random.shuffle(task_data)
+            
+            # Split into train/val (80/20 split)
+            split_idx = int(0.8 * len(task_data))
+            if split_idx > 0:
+                train_split = task_data[:split_idx]
+                val_split = task_data[split_idx:]
+                task_datasets[task_name] = train_split
+                task_val_sets[task_name] = val_split
             else:
+                # If not enough data for a proper split, use all for training
                 task_datasets[task_name] = task_data
-                task_val_sets[task_name] = []
+                task_val_sets[task_name] = task_data[:1]  # At least one example for validation
+
+            # Log label distributions for train/val to help debug class imbalance
+            try:
+                train_labels = [ex["label"] for ex in task_datasets[task_name] if "label" in ex]
+                val_labels = [ex["label"] for ex in task_val_sets[task_name] if "label" in ex]
+                train_counts = Counter(train_labels)
+                val_counts = Counter(val_labels)
+                print(f"   ▶ {task_name} train/val sizes: {len(train_labels)}/{len(val_labels)}")
+                print(f"   ▶ {task_name} train label dist (top): {train_counts.most_common(5)}")
+                print(f"   ▶ {task_name} val   label dist (top): {val_counts.most_common(5)}")
+            except Exception:
+                pass
                 
             print(f"   ✅ Loaded {len(task_datasets[task_name])} examples for {task_name}")
             
@@ -528,43 +694,129 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
             print(f"❌ Failed to load task {task_name}: {str(e)}")
             return
     
+    # Initialize results dictionary for evaluation
+    results = {task: {} for task in task_order}
+    
     # Main training loop over tasks
     for task_idx, task_name in enumerate(task_order):
         print(f"\n{'='*50}")
         print(f"🎯 Training on task {task_idx+1}/{len(task_order)}: {task_name.upper()}")
         print(f"{'='*50}")
+        print(f"🔍 DEBUG: Starting task {task_name} (index {task_idx})")
+        print(f"🔍 DEBUG: task_datasets keys: {list(task_datasets.keys())}")
+        print(f"🔍 DEBUG: task_val_sets keys: {list(task_val_sets.keys())}")
+        
+        # Get the dataset for the current task
+        train_set = task_datasets[task_name]
+        if not train_set:
+            print(f"⚠️  No training data for task {task_name}, skipping...")
+            continue
+            
+        print(f"📊 Training set size: {len(train_set)} examples")
+        print(f"📊 Validation set size: {len(task_val_sets.get(task_name, []))} examples")
+        print(f"📊 Task order: {task_order}")
         
         task_data = task_datasets[task_name]
         
         # Update model's classifier if needed (for tasks with different numbers of classes)
-        num_labels = len(set(example["label"] for example in task_data))
-        if hasattr(model, 'num_labels') and model.num_labels != num_labels:
-            print(f"🔄 Updating classifier for {num_labels} classes")
-            # Get the model configuration and update num_labels
-            config = model.config
-            config.num_labels = num_labels
+        # Calculate num_labels properly: for binary tasks, ensure 2; for multi-class, use max+1
+        all_labels = [example["label"] for example in task_data]
+        unique_labels = set(all_labels)
+        max_label = max(all_labels) if all_labels else 0
+        
+        # Task-specific handling: IMDB and SQuAD are binary (2 classes)
+        if task_name in ['imdb', 'squad']:
+            num_labels = 2
+        else:
+            # For other tasks (like ARC), use max_label + 1 (since labels are 0-indexed)
+            # But ensure we have at least as many classes as unique labels
+            num_labels = max(max_label + 1, len(unique_labels))
+        
+        current_num_labels = model.num_labels if hasattr(model, 'num_labels') else model.config.num_labels
+        
+        if current_num_labels != num_labels:
+            print(f"🔄 Updating classifier from {current_num_labels} to {num_labels} classes")
+            
+            # Create a new model with the correct number of labels
+            model_config = AutoConfig.from_pretrained(
+                model.config._name_or_path,
+                num_labels=num_labels,
+                torch_dtype=torch.float32
+            )
             
             # Create a new model with the updated configuration
             device = model.device
-            new_model = AutoModelForSequenceClassification.from_config(config)
+            new_model = AutoModelForSequenceClassification.from_config(model_config).to(device)
             
-            # Copy the weights from the old model to the new one
-            # First, copy all the base model weights
-            new_model.distilbert.load_state_dict(model.distilbert.state_dict())
+            # Copy the base model weights
+            new_model.distilbert = model.distilbert
             
-            # Initialize the new classifier with the right dimensions
-            in_features = model.classifier.in_features if hasattr(model, 'classifier') else model.config.hidden_size
-            new_model.classifier = nn.Linear(in_features, num_labels)
-            
-            # If we're keeping the same device, move the new model there
-            model = new_model.to(device)
-            # Update the trainer's model reference
+            # Reinitialize classifier with the correct number of classes
+            if hasattr(new_model, 'classifier') and hasattr(new_model, 'pre_classifier'):
+                # Initialize classifier with the correct dimensions
+                new_model.classifier = nn.Linear(
+                    model_config.hidden_size,
+                    num_labels
+                ).to(device)
+                
+                # Initialize weights
+                new_model.classifier.weight.data.normal_(mean=0.0, std=model_config.initializer_range)
+                if new_model.classifier.bias is not None:
+                    new_model.classifier.bias.data.zero_()
+                    
+                print(f"✅ Updated classifier to {num_labels} classes")
+                
+            # Update the model reference
+            model = new_model
             trainer.model = model
-        
+            
+            # Reinitialize optimizer with the new model parameters
+            trainer.optimizer = AdamW(model.parameters(), lr=2e-5)
+            
+            print(f"   Classifier weights: {model.classifier.weight.shape if hasattr(model, 'classifier') else 'N/A'}")
+            print(f"   Model device: {next(model.parameters()).device}")
+            print(f"   Model dtype: {next(model.parameters()).dtype}")
+            print(f"   Number of trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+            
+            # Don't skip the training loop - removed continue statement
+            
         # Training loop for current task
+        print(f"🔍 DEBUG: Starting training loop for {task_name} with {steps_per_task} steps")
         for step in range(steps_per_task):
-            # Sample a batch
-            batch = random.sample(task_data, min(config.get("batch_size", 32), len(task_data)))
+            if step % 10 == 0 or step == steps_per_task - 1:
+                print(f"🔍 DEBUG: Task {task_name} - Step {step+1}/{steps_per_task}")
+            
+            try:
+                # Sample a batch
+                batch_size = config.get('replay', {}).get('batch_size', 8)
+                batch = random.sample(task_data, min(batch_size, len(task_data)))
+                
+                # Prepare batch data
+                texts = [item["text"] for item in batch]
+                labels = [item["label"] for item in batch]
+                
+                # Ensure labels are in the correct format
+                if not isinstance(labels, torch.Tensor):
+                    labels = torch.tensor(labels, dtype=torch.long)
+                
+                # Train on the batch
+                loss = trainer.train_on_batch(texts, labels)
+                
+                # Log progress
+                if (step + 1) % 10 == 0 or step == steps_per_task - 1:
+                    print(f"📊 Task {task_name} | Step {step+1}/{steps_per_task} | Loss: {loss:.4f}")
+                    
+            except Exception as e:
+                print(f"⚠️  Error in training batch: {str(e)}")
+                # Print more detailed error information
+                import traceback
+                print("\n=== Error Details ===")
+                print(f"Error type: {type(e).__name__}")
+                print(f"Error message: {str(e)}")
+                print("\n=== Stack Trace ===")
+                traceback.print_exc()
+                print("\n" + "="*50 + "\n")
+                continue
             
             # Generate edits for the batch
             edited_batch = []
@@ -600,13 +852,30 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
             if memory and step > 0:  # Wait until we have some memory
                 replay_size = int(len(edited_batch) * config.get("replay", {}).get("fraction", 0.3))
                 if replay_size > 0:
-                    replay_batch = memory.sample(
+                    # Get raw replay items
+                    raw_replay = memory.sample(
                         replay_size,
                         task_balance=config.get("replay", {}).get("task_balance", True),
                         alpha=config.get("replay", {}).get("alpha", 1.0)
                     )
-            
-            # Combine batches and train
+
+                    # Filter replay items to ensure label compatibility with current task
+                    replay_batch = []
+                    for r in raw_replay:
+                        r_label = r.get("label")
+                        # Accept sample if label is an int within the model's expected range
+                        if isinstance(r_label, int) and r_label >= 0 and r_label < num_labels:
+                            replay_batch.append({
+                                "text": r.get("edit", r.get("original", "")),
+                                "label": r_label,
+                                "task": r.get("task", "unknown")
+                            })
+                        else:
+                            # Skip out-of-range / incompatible labels (e.g., multi-class labels when current
+                            # task is binary). This avoids training with labels the model cannot represent.
+                            continue
+
+            # Combine batches and train (only using replay items compatible with current task)
             combined_batch = edited_batch + replay_batch
             random.shuffle(combined_batch)
             
@@ -627,6 +896,7 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
                 print(f"⚠️ Error in training batch: {str(e)}")
                 continue
             
+            print(f"🔍 DEBUG: Storing {len(edited_batch)} edits in memory")
             # Store edits in memory with utility scores
             for edit in edited_batch:
                 # Simple utility: 1.0 for now, can be enhanced
@@ -637,45 +907,136 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
             if (step + 1) % 10 == 0 or step == steps_per_task - 1:
                 print(f"📊 Task {task_name} | Step {step+1}/{steps_per_task} | Loss: {loss:.4f}")
         
+        # Initialize task_metrics and task_evaluations for this task if they don't exist
+        if task_name not in task_metrics:
+            task_metrics[task_name] = []
+        if task_name not in task_evaluations:
+            task_evaluations[task_name] = []
+            
         # Evaluate on all tasks seen so far
-        print("\n🔍 Evaluating on all tasks...")
+        print(f"\n🔍 Evaluating on all tasks after {task_name} (task {task_idx+1}/{len(task_order)})...")
+        print(f"📊 Task metrics before evaluation: {task_metrics}")
+        print(f"📊 Task evaluations before evaluation: {task_evaluations}")
+        
+        # Ensure we have a trainer instance with predict method
+        if not hasattr(trainer, 'predict'):
+            print("⚠️  Trainer does not have a predict method, creating a new one...")
+            from seal.trainer import Trainer
+            trainer = Trainer(
+                model=model,
+                tokenizer=tokenizer,
+                learning_rate=config.get('learning_rate', 2e-5),
+                device=config.get('device', 'cpu'),
+                max_length=config.get('max_length', 512)
+            )
+            
         for eval_task in task_order[:task_idx+1]:
+            print(f"\n  - Evaluating task: {eval_task}")
             try:
                 val_set = task_val_sets.get(eval_task, [])
+                print(f"  - Validation set size: {len(val_set)} examples")
                 if not val_set:
                     print(f"⚠️  No validation set for task {eval_task}")
-                    continue
+                    # If no validation set, use training data for evaluation
+                    val_set = task_datasets.get(eval_task, [])
+                    if not val_set:
+                        print(f"⚠️  No data available for evaluation of task {eval_task}")
+                        task_metrics[eval_task].append(None)
+                        task_evaluations[eval_task].append(False)
+                        continue
+                    print(f"  - Using {len(val_set)} training examples for evaluation")
                 
-                # Get texts and true labels
-                texts = [ex["text"] for ex in val_set[:100]]  # Evaluate on first 100 examples
-                true_labels = [ex["label"] for ex in val_set[:100]]
+                # Limit evaluation to 100 examples for efficiency
+                eval_size = min(100, len(val_set))
+                val_set = val_set[:eval_size]
+                texts = [ex["text"] for ex in val_set]
+                true_labels = [ex["label"] for ex in val_set]
                 
-                # Get predictions in batches
-                predictions = trainer.predict(texts)
-                
-                # Calculate accuracy
-                accuracy = accuracy_score(true_labels, predictions)
-                
-                # Update results
-                if eval_task not in results:
-                    results[eval_task] = {}
-                results[eval_task][f"after_task_{task_idx}"] = accuracy
-                print(f"   ✅ {eval_task.upper()} accuracy: {accuracy:.4f}")
-                
+                try:
+                    # Get predictions
+                    predictions = trainer.predict(texts)
+                    
+                    # Ensure labels and predictions are in the correct format
+                    if not isinstance(true_labels, torch.Tensor):
+                        true_labels = torch.tensor(true_labels, dtype=torch.long)
+                    
+                    if isinstance(predictions, (list, np.ndarray)):
+                        predictions = torch.tensor(predictions, dtype=torch.long)
+                    
+                    # Calculate accuracy
+                    correct = (predictions == true_labels).sum().item()
+                    accuracy = correct / len(true_labels)
+                    
+                    # Update metrics
+                    task_metrics[eval_task].append(accuracy)
+                    task_evaluations[eval_task].append(True)
+                    print(f"   ✅ {eval_task.upper()} accuracy: {accuracy:.4f} ({correct}/{len(true_labels)})")
+                    
+                except Exception as e:
+                    print(f"   ⚠️  Error evaluating {eval_task}: {str(e)}")
+                    task_metrics[eval_task].append(0.0)  # Default to 0 accuracy on error
+                    task_evaluations[eval_task].append(False)
+            
             except Exception as e:
-                print(f"⚠️  Error evaluating {eval_task}: {str(e)}")
-    
+                print(f"⚠️  Error in evaluation loop: {str(e)}")
+                continue
+        
+        # Save results after each task
+    try:
+        os.makedirs("results", exist_ok=True)
+        with open("results/task_results.json", "w") as f:
+            import json
+            json.dump(results, f, indent=2)
+        print("💾 Saved evaluation results to results/task_results.json")
+    except Exception as e:
+        print(f"⚠️  Error saving results: {str(e)}")
+
+    # Save task metrics after each task
+    try:
+        metrics_path = os.path.join(config.get("save_dir", "outputs"), "multi_task")
+        os.makedirs(metrics_path, exist_ok=True)
+        metrics_file = os.path.join(metrics_path, f"{'_'.join(task_order[:task_idx+1])}_metrics.json")
+        with open(metrics_file, "w") as f:
+            json.dump({"accuracy_matrix": task_metrics}, f, indent=2)
+        print(f"💾 Saved task metrics to {metrics_file}")
+    except Exception as e:
+        print(f"⚠️  Error saving task metrics: {str(e)}")
+
     # Generate final evaluation report
     print("\n📊 Generating evaluation report...")
     from seal.eval_multi_domain import generate_evaluation_report
     
-    # Prepare accuracy matrix (fill with None for tasks not yet seen)
+    # Prepare accuracy matrix
     accuracy_matrix = {}
-    for i, task in enumerate(task_order):
-        accs = task_metrics[task]
-        # Pad with None for tasks not yet seen when this task was trained
-        accs = [None] * i + accs
-        accuracy_matrix[task] = accs
+    num_tasks = len(task_order)
+    
+    # Initialize the accuracy matrix with None values
+    for task in task_order:
+        accuracy_matrix[task] = [None] * num_tasks
+    
+    # Fill in the accuracies for each task at each evaluation point
+    print("\n📊 Building accuracy matrix...")
+    for eval_idx in range(num_tasks):
+        current_tasks = task_order[:eval_idx+1]
+        print(f"  - After task {eval_idx+1} (evaluating {len(current_tasks)} tasks)")
+        for task in current_tasks:
+            # Find the index of this task in the task order
+            task_idx_in_order = task_order.index(task)
+            # The task should have been evaluated (eval_idx - task_idx_in_order + 1) times
+            # For example: imdb (idx 0) after task 2 (eval_idx=2) should have 3 metrics (indices 0,1,2)
+            #              squad (idx 1) after task 2 (eval_idx=2) should have 2 metrics (indices 0,1)
+            #              arc (idx 2) after task 2 (eval_idx=2) should have 1 metric (index 0)
+            expected_metric_idx = eval_idx - task_idx_in_order
+            
+            # Check if we have enough metrics and if the evaluation was successful
+            if (len(task_metrics[task]) > expected_metric_idx and 
+                expected_metric_idx >= 0 and
+                len(task_evaluations[task]) > expected_metric_idx and
+                task_evaluations[task][expected_metric_idx]):
+                accuracy_matrix[task][eval_idx] = task_metrics[task][expected_metric_idx]
+                print(f"    - {task}: {accuracy_matrix[task][eval_idx]:.4f}")
+            else:
+                print(f"    - {task}: Not evaluated at this step (metrics len: {len(task_metrics[task])}, expected idx: {expected_metric_idx}, evaluations: {len(task_evaluations[task]) if task in task_evaluations else 0})")
     
     # Generate and save report
     report = generate_evaluation_report(

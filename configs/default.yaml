@@ -42,6 +42,15 @@ replay:
   # Sampling policy ('priority' or 'uniform')
   policy: priority
 
+# Task-specific dataset limits
+tasks:
+  imdb:
+    limit: 2000
+  squad:
+    limit: 2000
+  arc:
+    limit: 1500
+
 # Trainer Configuration
 trainer:
   # Learning rate
