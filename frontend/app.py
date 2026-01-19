@@ -347,14 +347,17 @@ def page_overview():
     #### Method Variants
     
     - **Baseline**: No protection mechanism → severe forgetting
-    - **SEAL with Replay**: Replays past examples → partial recovery
+    - **SEAL with Replay**: Replays past examples (failure case) → demonstrates insufficiency of replay alone
     - **Hybrid SEAL**: Combines replay + task-specific heads → better but still imperfect
+    - **Hybrid + Task-weighted Replay**: Alternative approach without parameter protection (failure case)
     - **Hybrid + EWC**: Adds parameter-level protection → **best stability**
     
     ### Key Insight
     
     > **Parameter-level protection (via EWC) is essential** for maintaining previous task performance 
-    > while learning new tasks. Replay alone is insufficient.
+    > while learning new tasks. Replay-only approaches are fundamentally insufficient without it.
+    
+    *Note: Methods without EWC are intentionally included to motivate the necessity of parameter-level protection.*
     """)
     
     st.info(

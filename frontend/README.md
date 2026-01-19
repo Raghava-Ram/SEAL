@@ -68,9 +68,10 @@ The chatbot uses **Ollama** for LLM inference:
 
 - **Model**: llama2 (configurable in `frontend/app.py`)
 - **Endpoint**: `http://localhost:11434`
+- **Cloud Deployment**: The chatbot requires local Ollama and is **expected to be unavailable** in cloud deployments (Streamlit Cloud, etc.)
 - **Fallback**: If Ollama is unavailable, the chatbot gracefully disables with an informative message
 
-To enable the chatbot:
+To enable the chatbot **locally**:
 
 ```bash
 # Terminal 1: Start Ollama

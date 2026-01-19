@@ -18,7 +18,7 @@ METHOD_RESULTS = {
             [None, None, 1.00],
         ],
         "source": "seal_replay.png",
-        "description": "Replay-based rehearsal only. Insufficient to prevent forgetting."
+        "description": "Replay-based rehearsal only (failure case). Demonstrates insufficiency of replay without parameter-level protection."
     },
 
     "M2: Hybrid SEAL (LLM + Replay)": {
@@ -51,14 +51,14 @@ METHOD_RESULTS = {
         "description": "Initial task-aware replay weighting strategy."
     },
 
-    "M5: Hybrid + Task-weighted Replay (v2)": {
+    "M5: Hybrid + Task-weighted Replay (v2 – unstable)": {
         "matrix": [
             [0.87, 1.00, 0.00],
             [None, 0.54, 0.54],
             [None, None, 1.00],
         ],
         "source": "hybrid_task_weighted_replay_v2.png",
-        "description": "Improved task-weighted replay with better balance."
+        "description": "Task-weighted replay without parameter protection (failure case). Motivates need for EWC."
     },
 
     "M6: FINAL – Hybrid + EWC": {
