@@ -1,0 +1,1 @@
+"""SEAL Frontend Data Package"""
