@@ -41,6 +41,7 @@ def run_imdb_comparison(config_path: str = "configs/default.yaml") -> None:
     # Load config
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
+    hybrid_mode = (isinstance(config, dict) and ((config.get('phase') == 'hybrid') or config.get('hybrid', False)))
     
     # Create output directory
     output_dir = config.get("save_dir", "outputs")
@@ -152,7 +153,7 @@ def run_imdb_comparison(config_path: str = "configs/default.yaml") -> None:
         
         print(f"\nParameter dtype distribution: {param_dtypes}")
         
-        # Print model summary
+        # Print model summary (skip verbose architecture printing in hybrid mode)
         print("\n=== Model Summary ===")
         print(f"Device: {next(model.parameters()).device}")
         print(f"Dtype: {next(model.parameters()).dtype}")
@@ -160,11 +161,11 @@ def run_imdb_comparison(config_path: str = "configs/default.yaml") -> None:
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"Total parameters: {total_params:,}")
         print(f"Trainable parameters: {trainable_params:,}")
-        
-        # Print model architecture for debugging
-        print("\n=== Model Architecture ===")
-        print(model)
-        print("\n" + "="*50 + "\n")
+        if not hybrid_mode:
+            # Print model architecture only when not running Phase 3 hybrid (reduces verbosity)
+            print("\n=== Model Architecture ===")
+            print(model)
+            print("\n" + "="*50 + "\n")
         
         # Verify model forward pass with dummy input
         try:
@@ -509,7 +510,8 @@ def run_seal_loop(config_path="configs/default.yaml"):
                 memory=memory,
                 batch_size=config["replay"]["batch_size"],
                 replay_fraction=config["replay"]["replay_fraction"],
-                policy=config["replay"]["policy"]
+                policy=config["replay"]["policy"],
+                hybrid=hybrid_mode
             )
 
             texts = [b["text"] for b in batch]
@@ -619,6 +621,30 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
     # Load config
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
+
+    # PHASE MODE DETECTION
+    # Phase 1: baseline -> no replay
+    # PHASE 2: seal -> SEAL-enabled replay and real utility computation
+    baseline_mode = False
+    seal_mode = False
+    hybrid_mode = False
+    if isinstance(config, dict):
+        baseline_mode = (config.get('phase') == 'baseline') or config.get('baseline', False)
+        seal_mode = (config.get('phase') == 'seal') or config.get('seal', False)
+        hybrid_mode = (config.get('phase') == 'hybrid') or config.get('hybrid', False)
+
+    if baseline_mode:
+        print("\n⚠️  Running Phase 1: Baseline (Replay Disabled)\n")
+    if seal_mode:
+        print("\n🔁 Running Phase 2: SEAL-enabled (Replay Enabled)\n")
+    if hybrid_mode:
+        # Print banner once for Phase 3
+        print("\n🔁 Running Phase 3: Hybrid SEAL (LLM-guided + Light Replay)\n")
+        # Exact required runtime message (print once)
+        print("Running Phase 3: Hybrid SEAL (LLM-guided + Light Replay)")
+    # Hybrid configuration: sparse LLM interval (default 10)
+    hybrid_cfg = config.get('hybrid', {}) if isinstance(config, dict) else {}
+    llm_interval = int(hybrid_cfg.get('llm_interval', 10))
     
     # Get task configuration
     task_config = config.get("tasks", {})
@@ -637,6 +663,9 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
     # Initialize trainer and memory
     trainer = SEALTrainer(model, tokenizer, config)
     memory = EditCache()
+    # Task-specific classifier heads storage
+    import copy as _copy
+    task_classifiers = {}
     
     # Track task-specific data and metrics
     task_datasets = {}
@@ -779,9 +808,30 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
             print(f"   Number of trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
             
             # Don't skip the training loop - removed continue statement
+        # Ensure model.config knows the correct num_labels for this task
+        try:
+            model.config.num_labels = num_labels
+        except Exception:
+            pass
+
+        # Attach existing task-specific classifier if available, otherwise create a fresh one
+        if task_name in task_classifiers:
+            trainer.model.classifier = _copy.deepcopy(task_classifiers[task_name]).to(trainer.device)
+        else:
+            # Create a new classifier head for this task
+            hidden_size = getattr(trainer.model.config, 'hidden_size', None) or getattr(trainer.model.config, 'dim', None)
+            if hidden_size is None:
+                hidden_size = trainer.model.config.hidden_size if hasattr(trainer.model.config, 'hidden_size') else 768
+            new_clf = nn.Linear(hidden_size, num_labels).to(trainer.device)
+            trainer.model.classifier = new_clf
             
         # Training loop for current task
         print(f"🔍 DEBUG: Starting training loop for {task_name} with {steps_per_task} steps")
+        # PHASE 3: announce sparse LLM guidance once per task
+        if hybrid_mode:
+            print(f"PHASE 3: Using sparse LLM guidance (interval = {llm_interval})")
+            # PHASE 3 EXTENSION: Task-aware replay weighting enabled (once per task)
+            print("PHASE 3 EXTENSION: Task-aware replay weighting enabled")
         for step in range(steps_per_task):
             if step % 10 == 0 or step == steps_per_task - 1:
                 print(f"🔍 DEBUG: Task {task_name} - Step {step+1}/{steps_per_task}")
@@ -825,18 +875,82 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
                     # For classification tasks, flip the label for editing
                     if task_name == "imdb":
                         target_label = 1 - example["label"]
-                        edited_text = generate_edit(
-                            example["text"], 
-                            target_label=target_label,
-                            mode=config.get("editing", {}).get("mode", "local")
-                        )
-                        edited_batch.append({
-                            "text": edited_text,
-                            "label": target_label,
-                            "task": task_name,
-                            "original_text": example["text"],
-                            "original_label": example["label"]
-                        })
+                        previous_tasks = task_order[:task_idx]
+
+                        # Sparse LLM usage only in hybrid mode
+                        if hybrid_mode:
+                            if llm_interval > 0 and (step % llm_interval) == 0:
+                                # Use LLM-guided edit this step
+                                edited_text = generate_edit(
+                                    example["text"],
+                                    target_label=target_label,
+                                    mode='llm',
+                                    current_task=task_name,
+                                    previous_tasks=previous_tasks
+                                )
+                                print(f"PHASE 3: LLM-guided edit at step {step}")
+                            else:
+                                # Fallback to local edit for intermediate steps
+                                edited_text = generate_edit(
+                                    example["text"],
+                                    target_label=target_label,
+                                    mode='local'
+                                )
+                                print(f"PHASE 3: Local edit at step {step}")
+                        else:
+                            # Non-hybrid behavior uses configured editing mode
+                            edit_mode = config.get("editing", {}).get("mode", "local")
+                            edited_text = generate_edit(
+                                example["text"], 
+                                target_label=target_label,
+                                mode=edit_mode,
+                                current_task=task_name,
+                                previous_tasks=previous_tasks
+                            )
+
+                        # PHASE 2: SEAL-enabled replay
+                        # If SEAL mode is active compute real utility using
+                        # score_edit_simple and include prediction/confidence
+                        # information in the edit record saved to memory.
+                        # In SEAL and Hybrid modes compute utility + pred/conf info
+                        if seal_mode or hybrid_mode:
+                            try:
+                                pred_before, conf_before = trainer.predict_with_confidence(example["text"])
+                            except Exception:
+                                pred_before, conf_before = None, 0.0
+                            try:
+                                pred_after, conf_after = trainer.predict_with_confidence(edited_text)
+                            except Exception:
+                                pred_after, conf_after = None, 0.0
+
+                            edit_record = {
+                                "text": edited_text,
+                                "label": target_label,
+                                "task": task_name,
+                                "original_text": example["text"],
+                                "original_label": example["label"],
+                                "pred_before": pred_before,
+                                "pred_after": pred_after,
+                                "conf_before": conf_before,
+                                "conf_after": conf_after
+                            }
+
+                            # Compute utility using existing utility function
+                            try:
+                                utility = score_edit_simple(edit_record)
+                            except Exception:
+                                utility = 0.0
+                            edit_record["utility"] = float(utility)
+                            edited_batch.append(edit_record)
+                        else:
+                            # Baseline / non-SEAL behavior: keep original edit format
+                            edited_batch.append({
+                                "text": edited_text,
+                                "label": target_label,
+                                "task": task_name,
+                                "original_text": example["text"],
+                                "original_label": example["label"]
+                            })
                     else:
                         # For other tasks, just use the original example for now
                         edited_batch.append({
@@ -847,17 +961,69 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
                 except Exception as e:
                     print(f"⚠️ Error generating edit: {str(e)}")
             
-            # Sample from memory for replay
+            # In baseline mode we DO NOT sample from memory and DO NOT include
+            # replay items in training. This ensures training batches contain
+            # only current-task examples.
             replay_batch = []
-            if memory and step > 0:  # Wait until we have some memory
-                replay_size = int(len(edited_batch) * config.get("replay", {}).get("fraction", 0.3))
+            if not baseline_mode and memory and step > 0:  # Wait until we have some memory
+                # Enforce light replay fraction between 0.1 and 0.2
+                rf = config.get("replay", {}).get("fraction", config.get("replay", {}).get("frac", 0.15))
+                try:
+                    replay_fraction = float(rf)
+                except Exception:
+                    replay_fraction = 0.15
+                if replay_fraction < 0.1 or replay_fraction > 0.2:
+                    # Enforce default light replay
+                    replay_fraction = 0.15
+                replay_size = int(len(edited_batch) * replay_fraction)
+                # Ensure at least 1 replay sample only if edited_batch is non-empty
                 if replay_size > 0:
-                    # Get raw replay items
-                    raw_replay = memory.sample(
-                        replay_size,
-                        task_balance=config.get("replay", {}).get("task_balance", True),
-                        alpha=config.get("replay", {}).get("alpha", 1.0)
-                    )
+                    if hybrid_mode:
+                        # Log light-replay settings per batch for Phase 3
+                        print(f"PHASE 3: HYBRID SEAL - replay_fraction={replay_fraction:.2f}, replay_size={replay_size}")
+                    # Get raw replay items. Use task-aware weighting when in hybrid mode.
+                    if hybrid_mode and config.get("replay", {}).get("policy", "priority") == "priority":
+                        edits_all = memory._read_all()
+                        if len(edits_all) <= replay_size:
+                            raw_replay = edits_all.copy()
+                        else:
+                            # Task-age weights
+                            task_weights = {"imdb": 1.5, "squad": 1.2, "arc": 1.0}
+                            eps = 1e-6
+                            weights = []
+                            for e in edits_all:
+                                util = max(float(e.get("utility", 0.0)), 0.0)
+                                task = str(e.get("task", "")).lower()
+                                taw = task_weights.get(task, 1.0)
+                                weights.append(util * taw + eps)
+
+                            total = sum(weights)
+                            if total <= 0:
+                                raw_replay = memory.sample(
+                                    replay_size,
+                                    task_balance=config.get("replay", {}).get("task_balance", True),
+                                    alpha=config.get("replay", {}).get("alpha", 1.0)
+                                )
+                            else:
+                                import random as _random
+                                indices = list(range(len(edits_all)))
+                                w = weights.copy()
+                                selected = []
+                                for _ in range(replay_size):
+                                    total_w = sum(w)
+                                    if total_w <= 0:
+                                        break
+                                    probs = [x / total_w for x in w]
+                                    idx = _random.choices(indices, weights=probs, k=1)[0]
+                                    selected.append(edits_all[idx])
+                                    w[idx] = 0.0
+                                raw_replay = selected
+                    else:
+                        raw_replay = memory.sample(
+                            replay_size,
+                            task_balance=config.get("replay", {}).get("task_balance", True),
+                            alpha=config.get("replay", {}).get("alpha", 1.0)
+                        )
 
                     # Filter replay items to ensure label compatibility with current task
                     replay_batch = []
@@ -871,8 +1037,6 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
                                 "task": r.get("task", "unknown")
                             })
                         else:
-                            # Skip out-of-range / incompatible labels (e.g., multi-class labels when current
-                            # task is binary). This avoids training with labels the model cannot represent.
                             continue
 
             # Combine batches and train (only using replay items compatible with current task)
@@ -896,11 +1060,37 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
                 print(f"⚠️ Error in training batch: {str(e)}")
                 continue
             
-            print(f"🔍 DEBUG: Storing {len(edited_batch)} edits in memory")
-            # Store edits in memory with utility scores
+            print(f"🔍 DEBUG: Considering {len(edited_batch)} edits for memory storage")
+            # Store only high-utility edits in memory (PHASE 3: HYBRID SEAL)
             for edit in edited_batch:
-                # Simple utility: 1.0 for now, can be enhanced
-                edit["utility"] = 1.0
+                # Ensure there is a utility score; compute if missing
+                if "utility" not in edit:
+                    try:
+                        edit_obj = {
+                            "original": edit.get("original_text", edit.get("original", "")),
+                            "edit": edit.get("text", ""),
+                            "pred_before": edit.get("pred_before", ""),
+                            "pred_after": edit.get("pred_after", ""),
+                            "conf_before": edit.get("conf_before", 0.0),
+                            "conf_after": edit.get("conf_after", 0.0)
+                        }
+                        edit["utility"] = float(score_edit_simple(edit_obj))
+                    except Exception:
+                        edit["utility"] = 0.0
+
+                # Skip low-utility edits (threshold 0.3)
+                try:
+                    util = float(edit.get("utility", 0.0))
+                except Exception:
+                    util = 0.0
+
+                if util < 0.3:
+                    # Skip storing low-utility edits to keep memory minimal
+                    if hybrid_mode:
+                        print(f"PHASE 3: Skipping edit with utility={util:.3f}")
+                    continue
+
+                # Add to memory (preserve existing memory.add_edit behavior)
                 memory.add_edit(edit)
             
             # Log progress
@@ -953,25 +1143,56 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
                 true_labels = [ex["label"] for ex in val_set]
                 
                 try:
-                    # Get predictions
-                    predictions = trainer.predict(texts)
+                    # Preserve original classifier and training state
+                    original_clf = _copy.deepcopy(trainer.model.classifier)
+                    original_training = trainer.model.training
+
+                    # Explicitly attach the task-specific classifier head for evaluation
+                    if eval_task in task_classifiers:
+                        try:
+                            # Create a fresh deepcopy of the stored classifier
+                            task_clf = _copy.deepcopy(task_classifiers[eval_task])
+                            # Explicitly move to the model's device and ensure it's on the same device
+                            task_clf = task_clf.to(trainer.device)
+                            trainer.model.classifier = task_clf
+                            print(f"EVAL: Attached classifier head for task {eval_task}")
+                        except Exception as e:
+                            print(f"⚠️  EVAL: Failed to attach classifier for task {eval_task}: {e}")
+                            # Fall back to original classifier if attachment fails
+                            trainer.model.classifier = original_clf
+
+                    # Ensure evaluation does not perform gradient updates
+                    trainer.model.eval()
+                    with torch.no_grad():
+                        predictions = trainer.predict(texts)
+
+                    # Restore original classifier and training state after evaluation
+                    try:
+                        trainer.model.classifier = original_clf.to(trainer.device)
+                        print(f"EVAL: Restored classifier head after evaluating {eval_task}")
+                    except Exception as e:
+                        print(f"⚠️  EVAL: Failed to restore classifier after {eval_task}: {e}")
                     
+                    # Restore original training state
+                    if original_training:
+                        trainer.model.train()
+
                     # Ensure labels and predictions are in the correct format
                     if not isinstance(true_labels, torch.Tensor):
                         true_labels = torch.tensor(true_labels, dtype=torch.long)
-                    
+
                     if isinstance(predictions, (list, np.ndarray)):
                         predictions = torch.tensor(predictions, dtype=torch.long)
-                    
+
                     # Calculate accuracy
                     correct = (predictions == true_labels).sum().item()
                     accuracy = correct / len(true_labels)
-                    
+
                     # Update metrics
                     task_metrics[eval_task].append(accuracy)
                     task_evaluations[eval_task].append(True)
                     print(f"   ✅ {eval_task.upper()} accuracy: {accuracy:.4f} ({correct}/{len(true_labels)})")
-                    
+
                 except Exception as e:
                     print(f"   ⚠️  Error evaluating {eval_task}: {str(e)}")
                     task_metrics[eval_task].append(0.0)  # Default to 0 accuracy on error
@@ -982,18 +1203,95 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
                 continue
         
         # Save results after each task
+        # Save the task-specific classifier head for later evaluation/switching
+        try:
+            task_classifiers[task_name] = _copy.deepcopy(trainer.model.classifier)
+        except Exception:
+            pass
+
+        # PHASE 5: Compute Fisher information after each task when EWC enabled
+        if config.get('ewc', {}).get('enabled', False):
+            try:
+                val_set = task_val_sets.get(task_name, [])
+                # Use validation set when available
+                if not val_set:
+                    val_set = task_datasets.get(task_name, [])
+                trainer.compute_fisher(val_set, task_name)
+                # Print the one-time PHASE 5 activation message after IMDB
+                if task_idx == 0 and not hasattr(trainer, '_phase5_enabled'):
+                    print("PHASE 5: EWC enabled (encoder-only) with task-specific classifier heads")
+                    trainer._phase5_enabled = True
+            except Exception as e:
+                print(f"⚠️ Error computing Fisher for task {task_name}: {e}")
+        # PHASE 4: After completing IMDB (task index 0) freeze low-level layers
+        if task_idx == 0 and hybrid_mode:
+            try:
+                model_obj = trainer.model
+                # Apply freezing to embeddings and first 4 transformer layers if present
+                base = getattr(model_obj, 'distilbert', None)
+                if base is not None:
+                    # Freeze token embeddings
+                    if hasattr(base, 'embeddings'):
+                        for p in base.embeddings.parameters():
+                            p.requires_grad = False
+                    # Freeze first four transformer layers safely (layers 0..3)
+                    if hasattr(base, 'transformer') and hasattr(base.transformer, 'layer'):
+                        for i in range(4):
+                            if i < len(base.transformer.layer):
+                                for p in base.transformer.layer[i].parameters():
+                                    p.requires_grad = False
+
+                # Reinitialize optimizer so it only contains trainable params
+                # Coerce config values to numeric types to avoid accidental string comparisons
+                lr_raw = config.get('learning_rate', config.get('trainer', {}).get('learning_rate', 2e-5))
+                try:
+                    lr = float(lr_raw)
+                except Exception:
+                    lr = 2e-5
+                wd_raw = config.get('weight_decay', config.get('training', {}).get('weight_decay', 0.01))
+                try:
+                    weight_decay = float(wd_raw)
+                except Exception:
+                    weight_decay = 0.01
+
+                # Build concrete parameter list (avoid generator expressions that some optimizers may introspect)
+                trainable_params = [p for p in trainer.model.parameters() if p.requires_grad]
+                trainer.optimizer = AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
+                # One-time log for Phase 4.1
+                if not hasattr(trainer, '_phase4_frozen'):
+                    print("PHASE 4.1: Freezing embeddings and first 4 transformer layers after IMDB")
+                    trainer._phase4_frozen = True
+            except Exception as e:
+                print(f"⚠️ Error while applying Phase 4 freezing: {e}")
     try:
-        os.makedirs("results", exist_ok=True)
-        with open("results/task_results.json", "w") as f:
+        # Save results to outputs. Use separate directories for baseline and
+        # SEAL-enabled runs to avoid clobbering artifacts.
+        base_out = os.path.join(config.get("save_dir", "outputs"), "multi_task")
+        if baseline_mode:
+            base_out = os.path.join(base_out, "baseline")
+        elif seal_mode:
+            base_out = os.path.join(base_out, "seal")
+        elif hybrid_mode:
+            base_out = os.path.join(base_out, "hybrid")
+
+        os.makedirs(base_out, exist_ok=True)
+        results_file = os.path.join(base_out, "task_results.json")
+        with open(results_file, "w") as f:
             import json
             json.dump(results, f, indent=2)
-        print("💾 Saved evaluation results to results/task_results.json")
+        print(f"💾 Saved evaluation results to {results_file}")
     except Exception as e:
         print(f"⚠️  Error saving results: {str(e)}")
 
     # Save task metrics after each task
     try:
         metrics_path = os.path.join(config.get("save_dir", "outputs"), "multi_task")
+        if baseline_mode:
+            metrics_path = os.path.join(metrics_path, "baseline")
+        elif seal_mode:
+            metrics_path = os.path.join(metrics_path, "seal")
+        elif hybrid_mode:
+            metrics_path = os.path.join(metrics_path, "hybrid")
         os.makedirs(metrics_path, exist_ok=True)
         metrics_file = os.path.join(metrics_path, f"{'_'.join(task_order[:task_idx+1])}_metrics.json")
         with open(metrics_file, "w") as f:
@@ -1039,14 +1337,22 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
                 print(f"    - {task}: Not evaluated at this step (metrics len: {len(task_metrics[task])}, expected idx: {expected_metric_idx}, evaluations: {len(task_evaluations[task]) if task in task_evaluations else 0})")
     
     # Generate and save report
+    # Generate evaluation report. Respect baseline output directory when in
+    # baseline_mode so all Phase 1 artifacts are under outputs/multi_task/baseline/.
+    report_out_dir = os.path.join(config.get("save_dir", "outputs"), "multi_task")
+    if baseline_mode:
+        report_out_dir = os.path.join(report_out_dir, "baseline")
+    elif seal_mode:
+        report_out_dir = os.path.join(report_out_dir, "seal")
+
     report = generate_evaluation_report(
         accuracy_matrix,
-        output_dir=os.path.join(config.get("save_dir", "outputs"), "multi_task"),
+        output_dir=report_out_dir,
         prefix=f"{'_'.join(task_order)}_"
     )
     
     print("\n✅ Multi-task learning completed!")
-    print(f"📝 Report saved to: {os.path.join(config.get('save_dir', 'outputs'), 'multi_task')}")
+    print(f"📝 Report saved to: {report_out_dir}")
 
 
 if __name__ == "__main__":

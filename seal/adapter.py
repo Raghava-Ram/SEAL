@@ -132,11 +132,38 @@ class TextEditor:
         mode = kwargs.get('mode', self.config.get('editing', {}).get('mode', 'local'))
         
         if mode == 'llm' and self.llm is not None:
-            # Use LLM for editing if available
+            # PHASE 3: HYBRID SEAL
+            # Use LLM for editing with semantic guidance to preserve prior-task patterns.
             try:
-                sentiment = "positive" if target_label == 1 else "negative"
-                prompt = f"Rewrite the following text to have a {sentiment} sentiment: {text}"
-                return self.llm.generate(prompt)
+                # Allow caller to provide task context for Phase 3 guidance
+                current_task = kwargs.get('current_task', None)
+                previous_tasks = kwargs.get('previous_tasks', []) or []
+
+                # Construct system and user messages per Phase 3 requirements
+                system_message = "You are helping a neural network learn new tasks without forgetting old ones."
+
+                # Build a concise user message including required fields
+                prev_tasks_str = ', '.join(previous_tasks) if previous_tasks else 'None'
+                minimal_adapt = (
+                    "Preserve prior knowledge patterns from the previous tasks and make minimal edits "
+                    "necessary for the current task. Do not introduce contradictory facts or change core reasoning." 
+                )
+
+                user_parts = []
+                if current_task:
+                    user_parts.append(f"Current task: {current_task}")
+                user_parts.append(f"Previous tasks: {prev_tasks_str}")
+                user_parts.append("Instruction: Preserve prior knowledge patterns and minimally adapt the text for the current task.")
+                user_parts.append(minimal_adapt)
+                user_parts.append(f"Example to rewrite: {text}")
+
+                user_message = "\n\n".join(user_parts)
+
+                prompt = create_prompt(system_message=system_message, user_message=user_message)
+
+                # Forward prompt to LLM client (allow passing through kwargs like timeout)
+                response = self.llm.generate(prompt, **kwargs)
+                return response
             except Exception as e:
                 print(f"⚠️  LLM editing failed: {e}")
                 print("Falling back to local editing...")

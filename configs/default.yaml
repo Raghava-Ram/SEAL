@@ -1,10 +1,15 @@
 # SEAL Configuration
 # This is the default configuration file for SEAL (Self-Edit Adaptive Learning)
 
+# Phase selection: set to 'baseline' or enable 'baseline: true' to run Phase 1
+phase: hybrid
+
 # Editing Configuration
 editing:
-  mode: local  # 'local' or 'llm'
-  return_type: label  # 'label' or 'text'
+  mode: local
+  return_type: label
+  enabled: true
+  num_edits: 1
 
 # LLM Configuration
 llm:
@@ -37,13 +42,15 @@ memory:
 replay:
   # Batch size for training
   batch_size: 8
-  # Fraction of batch to fill with replayed examples
-  replay_fraction: 0.5
+  # Fraction of batch to fill with replayed examples (light replay)
+  replay_fraction: 0.15
   # Sampling policy ('priority' or 'uniform')
   policy: priority
 
 # Task-specific dataset limits
 tasks:
+  # Short test steps per task (smoke test)
+  steps: 300
   imdb:
     limit: 2000
   squad:
@@ -128,38 +135,7 @@ data:
   # Random seed
   seed: 42
 
-# Editing configuration
-editing:
-  # Only local editing is supported
-  mode: "local"
-  # Whether to enable editing
-  enabled: true
-  # Number of edits to generate per input
-  num_edits: 1
-  # Whether to use beam search for generation
-  use_beam_search: false
-  # Number of beams for beam search
-  num_beams: 5
-  # Whether to use sampling
-  do_sample: true
-  # Top-k sampling
-  top_k: 50
-  # Top-p sampling
-  top_p: 0.95
-  # Repetition penalty
-  repetition_penalty: 1.2
-  # Length penalty
-  length_penalty: 1.0
-  # No repeat n-gram size
-  no_repeat_ngram_size: 3
-  # Whether to use cache
-  use_cache: true
-  # Whether to return full sequence
-  return_full_text: false
-  # Whether to skip special tokens in generation
-  skip_special_tokens: true
-  # Whether to clean up tokenization spaces
-  clean_up_tokenization_spaces: true
+# (duplicate generation settings removed — editing configured above)
 
 # Logging configuration
 logging:
@@ -196,3 +172,8 @@ output:
   save_best_model: true
   # Whether to save full model
   save_full_model: true
+
+# EWC (Elastic Weight Consolidation) settings
+ewc:
+  enabled: true
+  lambda: 1000

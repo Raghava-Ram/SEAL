@@ -1,33 +1,33 @@
 {
   "accuracy_matrix": {
     "imdb": [
-      0.88,
-      0.0,
-      0.02
+      0.95,
+      0.69,
+      0.82
     ],
     "squad": [
       null,
-      0.59,
-      0.01
+      0.57,
+      0.43
     ],
     "arc": [
       null,
       null,
-      1.0
+      0.97
     ]
   },
   "forgetting": {
-    "imdb": 0.86,
-    "squad": 0.58,
+    "imdb": 0.13,
+    "squad": 0.13999999999999996,
     "arc": 0.0
   },
   "backward_transfer": {
-    "imdb": -0.86,
+    "imdb": -0.13,
     "squad": 0.0
   },
   "average_metrics": {
-    "average_accuracy": 0.3433333333333333,
-    "average_forgetting": 0.48,
-    "average_backward_transfer": -0.43
+    "average_accuracy": 0.7399999999999999,
+    "average_forgetting": 0.08999999999999998,
+    "average_backward_transfer": -0.065
   }
 }

@@ -8,6 +8,8 @@ import os
 import random
 from typing import List, Dict, Any, Tuple
 from transformers import AutoModelForSequenceClassification
+import torch.nn.functional as F
+import copy
 
 class SEALTrainer:
     """
@@ -33,6 +35,13 @@ class SEALTrainer:
             lr=config.get("learning_rate", 5e-5),
             weight_decay=config.get("weight_decay", 0.01)
         )
+        # EWC storage: fisher information and parameter snapshot for encoder-only
+        ewc_cfg = config.get('ewc', {}) if isinstance(config, dict) else {}
+        self.ewc_enabled = bool(ewc_cfg.get('enabled', False))
+        self.ewc_lambda = float(ewc_cfg.get('lambda', ewc_cfg.get('lam', 0.0)))
+        # dictionaries mapping parameter name -> tensor
+        self.ewc_fisher = {}  # accumulated Fisher information for encoder params
+        self.ewc_theta = {}   # snapshot of encoder parameters (theta*)
 
     def train_step(self, text, label=1):
         """
@@ -170,11 +179,11 @@ class SEALTrainer:
         self.model = self.model.to(self.device).float()  # Ensure model is in float32
         self.model.zero_grad()  # Clear any existing gradients
             
-        # Ensure all parameters are float32 and require gradients
+        # Ensure all parameters are float32. Do NOT force-enable gradients here
+        # so that frozen parameters (requires_grad=False) remain frozen.
         for param in self.model.parameters():
             if param.is_floating_point():
                 param.data = param.data.float()
-            param.requires_grad_(True)
             
         try:
             
@@ -257,6 +266,22 @@ class SEALTrainer:
                 
                 # Ensure loss is float32
                 loss = loss.float()
+                # EWC penalty (encoder-only) applied here before backward
+                if getattr(self, 'ewc_fisher', None) and len(self.ewc_fisher) > 0 and getattr(self, 'ewc_lambda', 0) > 0:
+                    penalty = None
+                    for name, param in self.model.named_parameters():
+                        # Restrict penalty to encoder parameters present in fisher
+                        if name in self.ewc_fisher:
+                            theta_star = self.ewc_theta.get(name)
+                            F_i = self.ewc_fisher.get(name)
+                            if theta_star is None or F_i is None:
+                                continue
+                            # Ensure tensors are on same device/dtype
+                            diff = (param - theta_star).pow(2)
+                            term = (F_i * diff).sum()
+                            penalty = term if penalty is None else penalty + term
+                    if penalty is not None:
+                        loss = loss + (self.ewc_lambda * penalty)
                 
                 # Print loss info for debugging
                 if not hasattr(self, '_loss_printed'):
@@ -387,6 +412,101 @@ class SEALTrainer:
             
             # Re-raise the exception to stop execution
             raise RuntimeError(f"Training failed: {str(e)}") from e
+
+    def compute_fisher(self, dataset: list, task_name: str = 'task', batch_size: int = 16):
+        """
+        Compute Fisher information for encoder parameters using provided dataset.
+
+        Args:
+            dataset: list of examples, each a dict with 'text' and 'label'
+            task_name: name of the task (used for logging)
+            batch_size: tokenization batch size
+
+        Notes:
+            - This accumulates squared gradients of the log-likelihood
+              for encoder parameters only and stores them in `self.ewc_fisher`.
+            - A snapshot of encoder parameters is stored in `self.ewc_theta`.
+        """
+        if not dataset:
+            print(f"EWC: No data provided to compute Fisher for {task_name}")
+            return
+
+        self.model.eval()
+
+        # Initialize accumulators
+        fisher_accum = {}
+        count = 0
+
+        # Process dataset in batches
+        for i in range(0, len(dataset), batch_size):
+            batch = dataset[i:i+batch_size]
+            texts = [ex['text'] for ex in batch]
+            labels = [ex.get('label', 0) for ex in batch]
+
+            inputs = self.tokenizer(
+                texts,
+                padding=True,
+                truncation=True,
+                max_length=256,
+                return_tensors='pt'
+            )
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            labels_tensor = torch.tensor(labels, device=self.device, dtype=torch.long)
+
+            # Forward pass
+            outputs = self.model(**inputs)
+            logits = outputs.logits
+
+            # Compute negative log-likelihood (cross-entropy)
+            loss = F.cross_entropy(logits, labels_tensor)
+
+            # Backward to get gradients of loss (proxy for grad log-likelihood)
+            self.model.zero_grad()
+            loss.backward()
+
+            # Accumulate squared gradients for encoder params only
+            for name, param in self.model.named_parameters():
+                if not name.startswith('distilbert'):
+                    continue
+                if param.grad is None:
+                    continue
+                g2 = (param.grad.detach() ** 2).cpu()
+                if name in fisher_accum:
+                    fisher_accum[name] += g2
+                else:
+                    fisher_accum[name] = g2.clone()
+
+            count += 1
+
+        if count == 0:
+            print(f"EWC: No batches processed for Fisher computation for {task_name}")
+            return
+
+        # Average accumulated fisher
+        for name in fisher_accum:
+            fisher_accum[name] = fisher_accum[name] / float(count)
+
+        # Store/accumulate fisher and snapshot theta*
+        # theta*: snapshot of current encoder params
+        theta_snapshot = {}
+        for name, param in self.model.named_parameters():
+            if name.startswith('distilbert'):
+                theta_snapshot[name] = param.detach().cpu().clone()
+
+        # Merge into existing fisher (accumulate)
+        if getattr(self, 'ewc_fisher', None) and len(self.ewc_fisher) > 0:
+            for name, v in fisher_accum.items():
+                if name in self.ewc_fisher:
+                    self.ewc_fisher[name] = self.ewc_fisher[name] + v
+                else:
+                    self.ewc_fisher[name] = v
+        else:
+            self.ewc_fisher = fisher_accum
+
+        # Update theta*: keep the latest snapshot (could be enhanced to store per-task)
+        self.ewc_theta = theta_snapshot
+
+        print(f"EWC: Fisher information computed for task {task_name}")
 
     def save_checkpoint(self, path: str):
         """Save model checkpoint"""
