@@ -13,6 +13,13 @@ Traditional neural networks forget previously learned tasks when trained sequent
 
 The framework is fully CPU-compatible, uses DistilBERT, and supports local LLMs via Ollama.
 
+## 🎯 Live Demo
+
+**Frontend Demo (Read-Only Visualization)**  
+▶️ [https://raghava-ram-seal-frontendapp-dandwk.streamlit.app/](https://raghava-ram-seal-frontendapp-dandwk.streamlit.app/)
+
+Explore interactive visualizations of all 7 continual learning methods with accuracy heatmaps, forgetting analysis, and comparative results. Note: Chatbot requires local Ollama and is unavailable in cloud deployment.
+
 ## 📋 Table of Contents
 - [Features](#-features)
 - [Installation](#-installation)

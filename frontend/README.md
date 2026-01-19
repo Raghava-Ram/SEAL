@@ -2,6 +2,12 @@
 
 This is a **read-only** frontend for the SEAL (Self-Edit Adaptive Learning) continual learning research project.
 
+## 🎯 Live Demo
+
+▶️ **[View Live Frontend](https://raghava-ram-seal-frontendapp-dandwk.streamlit.app/)**
+
+Explore interactive visualizations of all 7 continual learning methods with accuracy heatmaps, forgetting analysis, and comparative results.
+
 ## Features
 
 The frontend provides 5 interactive screens:
