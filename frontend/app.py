@@ -760,12 +760,9 @@ def page_chatbot():
     
     # Check Ollama availability
     if not check_ollama_available():
-        st.error(
-            "⚠️ **Ollama is not running.**\n\n"
-            "Please start Ollama:\n"
-            "```bash\nollama serve\n```\n\n"
-            "Then pull a model:\n"
-            "```bash\nollama pull llama2\n```"
+        st.warning(
+            "Chatbot unavailable in cloud deployment. "
+            "Run locally with Ollama to enable conversational explanations."
         )
         return
     
