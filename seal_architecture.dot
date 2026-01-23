@@ -1,0 +1,355 @@
+digraph SEAL_Architecture {
+    rankdir=LR;
+    compound=true;
+    node [shape=box, fontname=Helvetica];
+    edge [fontname=Helvetica, fontsize=9];
+
+    // =========================================================================
+    // ENTRY POINTS CLUSTER
+    // =========================================================================
+    subgraph cluster_entry {
+        label="Entry Points";
+        style=filled;
+        fillcolor=lightblue;
+        
+        main[label="main.py\n(main())", shape=box, style=filled, fillcolor=lightblue];
+        mode_selector[label="--mode\nParameter\nParser", shape=diamond];
+        run_seal[label="run_seal_loop()\n(runner.py)"];
+        run_imdb[label="run_imdb_comparison()\n(runner.py)"];
+        run_seq_tasks[label="run_sequential_tasks()\n(runner.py)", shape=box, style=filled, fillcolor=yellow];
+    }
+
+    // =========================================================================
+    // CONFIGURATION & INITIALIZATION CLUSTER
+    // =========================================================================
+    subgraph cluster_init {
+        label="Configuration & Initialization";
+        style=filled;
+        fillcolor=lightcyan;
+        
+        config_yaml[label="Config YAML\n(configs/*.yaml)"];
+        load_config[label="Load Configuration\n(runner.py)"];
+        init_tokenizer[label="AutoTokenizer\n.from_pretrained()\n(runner.py)"];
+        init_model[label="AutoModelForSequenceClassification\n.from_pretrained()\n(runner.py)"];
+        init_trainer[label="SEALTrainer.__init__()\n(trainer.py)"];
+        init_memory[label="EditCache.__init__()\n(memory.py)"];
+    }
+
+    // =========================================================================
+    // DATA LOADING CLUSTER
+    // =========================================================================
+    subgraph cluster_data {
+        label="Data Loading Pipeline";
+        style=filled;
+        fillcolor=lightgreen;
+        
+        get_task_loader[label="get_task_loader()\n(tasks.py)"];
+        load_imdb_data[label="load_imdb()\n(tasks.py)"];
+        load_squad_data[label="load_squad()\n(tasks.py)"];
+        load_arc_data[label="load_arc()\n(tasks.py)"];
+        dataset_hf[label="Hugging Face\nDatasets\n(imdb, squad, ai2_arc)"];
+        split_data[label="Train/Val Split\n(80/20)\n(runner.py)"];
+    }
+
+    // =========================================================================
+    // TRAINING LOOP CLUSTER
+    // =========================================================================
+    subgraph cluster_training {
+        label="Training Pipeline";
+        style=filled;
+        fillcolor=lightyellow;
+        
+        task_loop[label="For Each Task\n(IMDB→SQuAD→ARC)\n(runner.py)", shape=box, style=filled, fillcolor=orange];
+        steps_loop[label="For Each Step\n(0...steps_per_task)\n(runner.py)", shape=box, style=filled, fillcolor=orange];
+        sample_batch[label="Sample Batch\nfrom Task Data\n(runner.py)"];
+        train_step[label="train_on_batch()\n(trainer.py)", shape=box, style=filled, fillcolor=lightyellow];
+        tokenize[label="Tokenize Inputs\n(train_on_batch)\n(trainer.py)"];
+        forward_pass[label="Forward Pass\n(trainer.py)", shape=ellipse];
+        loss_compute[label="Compute Loss\n+ EWC Penalty\n(trainer.py)"];
+        backward_pass[label="Backward Pass\n(train_on_batch)\n(trainer.py)", shape=ellipse];
+        optimizer_step[label="optimizer.step()\n(trainer.py)"];
+    }
+
+    // =========================================================================
+    // EDIT GENERATION CLUSTER
+    // =========================================================================
+    subgraph cluster_editing {
+        label="Edit Generation";
+        style=filled;
+        fillcolor=lightcyan;
+        
+        generate_edit[label="generate_edit()\n(adapter.py)"];
+        edit_mode[label="Edit Mode\nSelector", shape=diamond];
+        llm_edit[label="LLM-based Edit\n(TextEditor.edit)\n(adapter.py)"];
+        local_edit[label="Local Edit\n(_edit_text_locally)\n(adapter.py)"];
+        text_editor[label="TextEditor\nInstance\n(adapter.py)"];
+        llm_client[label="get_llm_client()\n(llm_adapter.py)"];
+        ollama[label="OllamaClient\n(ollama_client.py)"];
+    }
+
+    // =========================================================================
+    // EVALUATION & UTILITY CLUSTER
+    // =========================================================================
+    subgraph cluster_utility {
+        label="Prediction & Utility Scoring";
+        style=filled;
+        fillcolor=lightyellow;
+        
+        predict_conf[label="predict_with_confidence()\n(trainer.py)"];
+        score_edit[label="score_edit_simple()\n(utility.py)"];
+        pred_before[label="Predict Before\n(model.eval)"];
+        pred_after[label="Predict After\n(model.eval)"];
+        utility_weight[label="Utility Weighting\n(conf, pred_change, acc)\n(utility.py)"];
+    }
+
+    // =========================================================================
+    // MEMORY & REPLAY CLUSTER
+    // =========================================================================
+    subgraph cluster_memory {
+        label="Memory & Replay Management";
+        style=filled;
+        fillcolor=lightgray;
+        
+        memory_storage[label="EditCache.add_edit()\n(memory.py)"];
+        high_util_filter[label="Filter: utility ≥ 0.3\n(runner.py)", shape=diamond];
+        memory_file[label="memory/edits.jsonl\n(persistent storage)"];
+        replay_sample[label="memory.sample()\n(memory.py)"];
+        replay_mix[label="mix_batches()\n(replay.py)"];
+        task_balance[label="Task-Aware\nReplay Weighting\n(replay.py)"];
+    }
+
+    // =========================================================================
+    // CONTINUAL LEARNING MECHANISMS CLUSTER
+    // =========================================================================
+    subgraph cluster_ewc {
+        label="Forgetting Mitigation (EWC)";
+        style=filled;
+        fillcolor=lavender;
+        
+        compute_fisher[label="compute_fisher()\n(trainer.py)", shape=box, style=filled, fillcolor=lavender];
+        fisher_accum[label="Accumulate\nSquared Gradients\n(compute_fisher)"];
+        fisher_storage[label="Store Fisher Info\n(ewc_fisher dict)\n(trainer.py)"];
+        theta_snapshot[label="Store θ* Snapshot\n(ewc_theta dict)\n(trainer.py)"];
+        ewc_penalty[label="EWC Penalty\nComputation\n(train_on_batch)", shape=ellipse];
+    }
+
+    // =========================================================================
+    // TASK-SPECIFIC COMPONENTS CLUSTER
+    // =========================================================================
+    subgraph cluster_task_specific {
+        label="Task-Specific Classifiers & Freezing";
+        style=filled;
+        fillcolor=wheat;
+        
+        clf_heads[label="task_classifiers[]\nStorage Dict\n(runner.py)"];
+        create_clf[label="Create Linear\nClassifier Head\n(runner.py)"];
+        attach_clf[label="Attach Task\nClassifier Head\n(runner.py)"];
+        swap_clf[label="Swap Classifier\nHeads During\nEvaluation\n(runner.py)"];
+        phase4_freeze[label="PHASE 4:\nFreeze Embeddings\n+ First 4 Layers\n(runner.py)"];
+    }
+
+    // =========================================================================
+    // EVALUATION CLUSTER
+    // =========================================================================
+    subgraph cluster_eval {
+        label="Evaluation & Metrics";
+        style=filled;
+        fillcolor=lightsalmon;
+        
+        eval_loop[label="For Each Seen Task\n(Evaluation)\n(runner.py)", shape=box, style=filled, fillcolor=lightsalmon];
+        eval_predict[label="trainer.predict()\n(trainer.py)"];
+        accuracy_calc[label="Calculate Accuracy\n(sklearn metrics)\n(runner.py)"];
+        store_metrics[label="task_metrics[]\nAccumulate\n(runner.py)"];
+        accuracy_matrix[label="Build Accuracy\nMatrix\n(runner.py)"];
+    }
+
+    // =========================================================================
+    // OUTPUT & FRONTEND CLUSTER
+    // =========================================================================
+    subgraph cluster_output {
+        label="Output & Frontend Visualization";
+        style=filled;
+        fillcolor=lightpink;
+        
+        save_results[label="Save task_results.json\n(outputs/multi_task/)\n(runner.py)"];
+        save_metrics[label="Save *_metrics.json\n(outputs/multi_task/)\n(runner.py)"];
+        eval_report[label="generate_evaluation_report()\n(eval_multi_domain.py)"];
+        frontend_app[label="Streamlit Frontend\n(frontend/app.py)", shape=box, style=filled, fillcolor=lightpink];
+    }
+
+    // =========================================================================
+    // EXTERNAL DATA SOURCES
+    // =========================================================================
+    subgraph cluster_external {
+        label="External Data & Services";
+        style=filled;
+        fillcolor=lightgray;
+        
+        hf_datasets[label="Hugging Face\nDatasets API"];
+        ollama_service[label="Ollama LLM\nService\n(localhost:11434)"];
+    }
+
+    // =========================================================================
+    // EDGES: ENTRY & INITIALIZATION
+    // =========================================================================
+    main -> mode_selector;
+    mode_selector -> run_seq_tasks [label="mode=tasks"];
+    run_seq_tasks -> load_config;
+    load_config -> config_yaml;
+    
+    run_seq_tasks -> init_tokenizer;
+    run_seq_tasks -> init_model;
+    init_tokenizer -> init_trainer;
+    init_model -> init_trainer;
+    init_trainer -> init_memory;
+
+    // =========================================================================
+    // EDGES: DATA LOADING
+    // =========================================================================
+    run_seq_tasks -> get_task_loader;
+    get_task_loader -> load_imdb_data;
+    get_task_loader -> load_squad_data;
+    get_task_loader -> load_arc_data;
+    
+    load_imdb_data -> dataset_hf;
+    load_squad_data -> dataset_hf;
+    load_arc_data -> dataset_hf;
+    
+    dataset_hf -> hf_datasets;
+    
+    load_imdb_data -> split_data;
+    load_squad_data -> split_data;
+    load_arc_data -> split_data;
+
+    // =========================================================================
+    // EDGES: TRAINING LOOP STRUCTURE
+    // =========================================================================
+    run_seq_tasks -> task_loop;
+    task_loop -> steps_loop;
+    steps_loop -> sample_batch;
+    sample_batch -> train_step;
+    
+    split_data -> sample_batch;
+
+    // =========================================================================
+    // EDGES: TRAINING COMPUTATION
+    // =========================================================================
+    train_step -> tokenize;
+    tokenize -> forward_pass;
+    forward_pass -> loss_compute;
+    
+    init_trainer -> train_step [label="model, tokenizer"];
+    init_trainer -> ewc_penalty;
+    ewc_penalty -> loss_compute [label="λ * penalty"];
+    
+    loss_compute -> backward_pass;
+    backward_pass -> optimizer_step;
+
+    // =========================================================================
+    // EDGES: EDIT GENERATION (PHASE 2 & 3)
+    // =========================================================================
+    steps_loop -> generate_edit;
+    generate_edit -> edit_mode;
+    
+    edit_mode -> llm_edit [label="mode=llm"];
+    edit_mode -> local_edit [label="mode=local"];
+    
+    generate_edit -> text_editor;
+    text_editor -> llm_client [label="if LLM mode"];
+    llm_client -> ollama;
+    ollama -> ollama_service;
+
+    // =========================================================================
+    // EDGES: PREDICTION & UTILITY SCORING
+    // =========================================================================
+    steps_loop -> predict_conf;
+    predict_conf -> pred_before;
+    predict_conf -> pred_after;
+    
+    pred_before -> score_edit;
+    pred_after -> score_edit;
+    score_edit -> utility_weight;
+
+    // =========================================================================
+    // EDGES: MEMORY MANAGEMENT (PHASE 2)
+    // =========================================================================
+    generate_edit -> memory_storage [label="high-utility edits"];
+    score_edit -> high_util_filter;
+    high_util_filter -> memory_storage [label="utility ≥ 0.3"];
+    memory_storage -> memory_file;
+
+    // =========================================================================
+    // EDGES: REPLAY SAMPLING (PHASE 2 & 3)
+    // =========================================================================
+    steps_loop -> replay_sample [label="after step 0"];
+    memory_file -> replay_sample;
+    replay_sample -> task_balance [label="if hybrid mode"];
+    replay_sample -> replay_mix;
+    task_balance -> replay_mix;
+    
+    replay_mix -> train_step [label="replay batch"];
+    sample_batch -> replay_mix [label="new batch"];
+
+    // =========================================================================
+    // EDGES: CONTINUAL LEARNING (PHASE 5)
+    // =========================================================================
+    task_loop -> compute_fisher [label="after task"];
+    split_data -> compute_fisher;
+    compute_fisher -> fisher_accum;
+    fisher_accum -> fisher_storage;
+    compute_fisher -> theta_snapshot;
+    
+    fisher_storage -> ewc_penalty;
+    theta_snapshot -> ewc_penalty;
+
+    // =========================================================================
+    // EDGES: TASK-SPECIFIC CLASSIFIERS (PHASE 4 & 5)
+    // =========================================================================
+    task_loop -> create_clf [label="per task"];
+    task_loop -> attach_clf;
+    attach_clf -> clf_heads;
+    create_clf -> clf_heads;
+    
+    task_loop -> swap_clf [label="during eval"];
+    clf_heads -> swap_clf;
+    
+    task_loop -> phase4_freeze [label="after IMDB"];
+    phase4_freeze -> train_step [label="freeze params"];
+
+    // =========================================================================
+    // EDGES: EVALUATION
+    // =========================================================================
+    task_loop -> eval_loop;
+    eval_loop -> swap_clf [label="attach task clf"];
+    eval_loop -> eval_predict;
+    eval_predict -> accuracy_calc;
+    accuracy_calc -> store_metrics;
+    store_metrics -> accuracy_matrix;
+
+    // =========================================================================
+    // EDGES: OUTPUTS
+    // =========================================================================
+    store_metrics -> save_results;
+    store_metrics -> save_metrics;
+    accuracy_matrix -> eval_report;
+    eval_report -> save_results;
+    eval_report -> save_metrics;
+    
+    save_results -> frontend_app;
+    save_metrics -> frontend_app;
+
+    // =========================================================================
+    // LEGEND
+    // =========================================================================
+    subgraph cluster_legend {
+        label="Legend";
+        style=filled;
+        fillcolor=white;
+        
+        legend_entry[label="Entry Point", shape=box, style=filled, fillcolor=lightblue];
+        legend_data[label="Data Source", shape=box, style=filled, fillcolor=lightgreen];
+        legend_process[label="Processing Step", shape=box, style=filled, fillcolor=lightyellow];
+        legend_cluster[label="Process Cluster", shape=box, style=filled, fillcolor=lightcyan];
+        legend_output[label="Output/Storage", shape=box, style=filled, fillcolor=lightpink];
+    }
+}
