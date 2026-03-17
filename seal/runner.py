@@ -966,15 +966,18 @@ def run_sequential_tasks(config_path: str = "configs/default.yaml") -> None:
             # only current-task examples.
             replay_batch = []
             if not baseline_mode and memory and step > 0:  # Wait until we have some memory
-                # Enforce light replay fraction between 0.1 and 0.2
-                rf = config.get("replay", {}).get("fraction", config.get("replay", {}).get("frac", 0.15))
+                # Retrieve replay_fraction from config (same key as Phase 1/2)
+                rf = config.get("replay", {}).get("replay_fraction", config.get("replay", {}).get("fraction", 0.15))
                 try:
                     replay_fraction = float(rf)
                 except Exception:
                     replay_fraction = 0.15
-                if replay_fraction < 0.1 or replay_fraction > 0.2:
-                    # Enforce default light replay
+                # Validate replay_fraction is in valid range
+                if replay_fraction < 0.0 or replay_fraction > 1.0:
+                    print(f"⚠️ WARNING: replay_fraction {replay_fraction} out of range [0.0, 1.0], reset to 0.15")
                     replay_fraction = 0.15
+                if hybrid_mode:
+                    print(f"[HYBRID CONFIG] Using replay_fraction = {replay_fraction}")
                 replay_size = int(len(edited_batch) * replay_fraction)
                 # Ensure at least 1 replay sample only if edited_batch is non-empty
                 if replay_size > 0:

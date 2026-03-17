@@ -1,0 +1,33 @@
+{
+  "accuracy_matrix": {
+    "imdb": [
+      0.83,
+      0.99,
+      0.94
+    ],
+    "squad": [
+      null,
+      0.8,
+      0.44
+    ],
+    "arc": [
+      null,
+      null,
+      1.0
+    ]
+  },
+  "forgetting": {
+    "imdb": 0.050000000000000044,
+    "squad": 0.36000000000000004,
+    "arc": 0.0
+  },
+  "backward_transfer": {
+    "imdb": 0.10999999999999999,
+    "squad": 0.0
+  },
+  "average_metrics": {
+    "average_accuracy": 0.7933333333333333,
+    "average_forgetting": 0.1366666666666667,
+    "average_backward_transfer": 0.05499999999999999
+  }
+}

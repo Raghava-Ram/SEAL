@@ -176,4 +176,4 @@ output:
 # EWC (Elastic Weight Consolidation) settings
 ewc:
   enabled: true
-  lambda: 1000
+  lambda: 100

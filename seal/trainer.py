@@ -39,9 +39,9 @@ class SEALTrainer:
         ewc_cfg = config.get('ewc', {}) if isinstance(config, dict) else {}
         self.ewc_enabled = bool(ewc_cfg.get('enabled', False))
         self.ewc_lambda = float(ewc_cfg.get('lambda', ewc_cfg.get('lam', 0.0)))
-        # dictionaries mapping parameter name -> tensor
-        self.ewc_fisher = {}  # accumulated Fisher information for encoder params
-        self.ewc_theta = {}   # snapshot of encoder parameters (theta*)
+        # Multi-task EWC: store per-task fisher and theta snapshots
+        # Each element: {'task_name': str, 'theta': dict, 'fisher': dict}
+        self.ewc_tasks = []  # list of {"task_name": str, "theta": {...}, "fisher": {...}}
 
     def train_step(self, text, label=1):
         """
@@ -266,20 +266,30 @@ class SEALTrainer:
                 
                 # Ensure loss is float32
                 loss = loss.float()
-                # EWC penalty (encoder-only) applied here before backward
-                if getattr(self, 'ewc_fisher', None) and len(self.ewc_fisher) > 0 and getattr(self, 'ewc_lambda', 0) > 0:
+                # Multi-task EWC penalty (encoder-only): apply penalty from ALL previous tasks
+                if getattr(self, 'ewc_tasks', None) and len(self.ewc_tasks) > 0 and getattr(self, 'ewc_lambda', 0) > 0:
                     penalty = None
-                    for name, param in self.model.named_parameters():
-                        # Restrict penalty to encoder parameters present in fisher
-                        if name in self.ewc_fisher:
-                            theta_star = self.ewc_theta.get(name)
-                            F_i = self.ewc_fisher.get(name)
+                    # Loop through all stored task snapshots
+                    for task_snapshot in self.ewc_tasks:
+                        fisher_dict = task_snapshot.get('fisher', {})
+                        theta_dict = task_snapshot.get('theta', {})
+                        task_name = task_snapshot.get('task_name', '?')
+                        
+                        for name, param in self.model.named_parameters():
+                            # Restrict penalty to encoder parameters present in this task's fisher
+                            if name not in fisher_dict:
+                                continue
+                            
+                            theta_star = theta_dict.get(name)
+                            F_i = fisher_dict.get(name)
                             if theta_star is None or F_i is None:
                                 continue
+                            
                             # Ensure tensors are on same device/dtype
                             diff = (param - theta_star).pow(2)
                             term = (F_i * diff).sum()
                             penalty = term if penalty is None else penalty + term
+                    
                     if penalty is not None:
                         loss = loss + (self.ewc_lambda * penalty)
                 
@@ -493,20 +503,16 @@ class SEALTrainer:
             if name.startswith('distilbert'):
                 theta_snapshot[name] = param.detach().cpu().clone()
 
-        # Merge into existing fisher (accumulate)
-        if getattr(self, 'ewc_fisher', None) and len(self.ewc_fisher) > 0:
-            for name, v in fisher_accum.items():
-                if name in self.ewc_fisher:
-                    self.ewc_fisher[name] = self.ewc_fisher[name] + v
-                else:
-                    self.ewc_fisher[name] = v
-        else:
-            self.ewc_fisher = fisher_accum
-
-        # Update theta*: keep the latest snapshot (could be enhanced to store per-task)
-        self.ewc_theta = theta_snapshot
+        # Store per-task fisher and theta snapshot (don't overwrite or accumulate globally)
+        task_snapshot = {
+            'task_name': task_name,
+            'fisher': copy.deepcopy(fisher_accum),
+            'theta': copy.deepcopy(theta_snapshot)
+        }
+        self.ewc_tasks.append(task_snapshot)
 
         print(f"EWC: Fisher information computed for task {task_name}")
+        print(f"EWC: Stored snapshot for task '{task_name}'. Total tasks stored: {len(self.ewc_tasks)}")
 
     def save_checkpoint(self, path: str):
         """Save model checkpoint"""
@@ -573,7 +579,15 @@ class SEALTrainer:
     def load_imdb(self, subset_size=500):
         """Load a small subset of IMDB dataset for CPU testing."""
         try:
-            ds = load_dataset("imdb", split="train[:5%]").shuffle(seed=42)
+            # Use configured seed when available to ensure reproducible shuffles
+            cfg_seed = None
+            if isinstance(self.config, dict):
+                cfg_seed = self.config.get('data', {}).get('seed', self.config.get('seed', None))
+            try:
+                seed = int(cfg_seed) if cfg_seed is not None else 42
+            except Exception:
+                seed = 42
+            ds = load_dataset("imdb", split="train[:5%]").shuffle(seed=seed)
             # Downsample for speed
             small_ds = [{"text": ex["text"], "label": ex["label"]}
                        for ex in ds.select(range(min(subset_size, len(ds))))]

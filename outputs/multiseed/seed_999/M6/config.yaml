@@ -1,0 +1,88 @@
+data:
+  label_column: label
+  max_length: 128
+  seed: 42
+  test_size: 0.2
+  text_column: text
+datasets:
+- imdb
+- squad
+- arc_agi_subset
+editing:
+  enabled: true
+  mode: local
+  num_edits: 1
+  return_type: label
+ewc:
+  enabled: true
+  lambda: 1000
+llm:
+  backend: ollama
+logging:
+  console: true
+  datefmt: '%Y-%m-%d %H:%M:%S'
+  file: logs/seal.log
+  file_log: true
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  level: info
+memory:
+  max_size: 20000
+  path: memory/edits.jsonl
+  type: jsonl
+model:
+  dropout: 0.1
+  name_or_path: distilbert-base-uncased
+  num_labels: 2
+ollama:
+  host: http://localhost:11434
+  max_retries: 3
+  model: llama2
+  stream: false
+  timeout: 120
+openai:
+  api_key: ''
+  model: gpt-3.5-turbo
+output:
+  dir: outputs
+  save_best_model: true
+  save_config: true
+  save_full_model: true
+  save_metrics: true
+  save_model: true
+  save_predictions: true
+  save_tokenizer: true
+  save_training_args: true
+phase: hybrid
+replay:
+  batch_size: 8
+  policy: priority
+  replay_fraction: 0.15
+save_dir: C:\Users\ragha\Desktop\SEAL\outputs\multiseed\seed_999\M6
+tasks:
+  arc:
+    limit: 1500
+  imdb:
+    limit: 2000
+  squad:
+    limit: 2000
+  steps: 300
+trainer:
+  device: cpu
+  eval_interval: 10
+  learning_rate: 1e-4
+  max_steps: 1000
+training:
+  evaluation_strategy: epoch
+  greater_is_better: true
+  learning_rate: 2e-5
+  load_best_model_at_end: true
+  logging_steps: 100
+  max_grad_norm: 1.0
+  metric_for_best_model: accuracy
+  num_train_epochs: 3
+  per_device_eval_batch_size: 16
+  per_device_train_batch_size: 16
+  save_strategy: epoch
+  save_total_limit: 1
+  warmup_steps: 500
+  weight_decay: 0.01
